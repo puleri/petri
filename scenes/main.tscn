@@ -1,0 +1,10 @@
+[gd_scene load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://scripts/petri_game.gd" id="1_game"]
+[ext_resource type="Script" path="res://scripts/audio_manager.gd" id="2_audio"]
+
+[node name="PETRI" type="Node2D"]
+script = ExtResource("1_game")
+
+[node name="AudioManager" type="Node" parent="."]
+script = ExtResource("2_audio")

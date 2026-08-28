@@ -1,0 +1,15 @@
+[gd_resource type="Resource" script_class="GermData" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/germ_data.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+tier = 1
+radius = 29.0
+hp = 2
+speed_min = 66.0
+speed_max = 98.0
+score = 50
+child_tier = 2
+child_count = 2
+fragment_count = 2

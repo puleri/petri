@@ -1,0 +1,17 @@
+# Godot editor/cache
+.godot/
+.import/
+*.translation
+
+# Generated builds and reports
+dist/
+build/
+coverage/
+
+# Vercel local state
+.vercel/
+
+# OS/editor files
+.DS_Store
+*.swp
+*.tmp
