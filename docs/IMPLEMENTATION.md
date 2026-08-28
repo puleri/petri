@@ -24,6 +24,6 @@ Target compositions are 1280×720, 1920×1080, and 2560×1080.
 
 The existing Figma text nodes identify the exact face as `{ family: "Excelorate", style: "Regular" }`, but report `hasMissingFont: true` to the remote plugin. The bundled `Excelorate-Font.otf` is committed and used directly by Godot.
 
-The gameplay HUD uses the approved `assets/figma/petri-logo.png` export. Wide layouts follow the archived composition with angled outlined score/time blocks and a lower-right `BOOST / SPACE` charge pill; standard layouts retain anchored corners for readability.
+The gameplay HUD uses the approved `assets/figma/petri-logo.png` export. Every viewport uses the archived composition's angled outlined score/time blocks, mint side rails, and lower-right `BOOST / SPACE` charge pill. A shared responsive unit scales and repositions the treatment for standard, wide, and compact layouts without changing its visual language.
 
 When Figma access resumes, continue the design-system ledger from `/private/tmp/design-system-state-petri-v1.json`; do not recreate the completed color variables.

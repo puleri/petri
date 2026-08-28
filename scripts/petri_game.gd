@@ -607,12 +607,12 @@ func _draw_game_world() -> void:
 	var offset := _visual_offset()
 	var center := arena_center + offset
 	draw_rect(Rect2(Vector2.ZERO, viewport_size), GAME_BG)
-	if wide_layout:
-		var rail_top := maxf(0.0, arena_center.x - arena_radius - viewport_size.y * 0.11)
-		var rail_slope := viewport_size.y * 0.36
-		draw_colored_polygon(PackedVector2Array([Vector2.ZERO, Vector2(rail_top, 0), Vector2(maxf(0.0, rail_top - rail_slope), viewport_size.y), Vector2(0, viewport_size.y)]), RAIL_MINT)
-		draw_colored_polygon(PackedVector2Array([Vector2(viewport_size.x - rail_top, 0), Vector2(viewport_size.x, 0), viewport_size, Vector2(minf(viewport_size.x, viewport_size.x - rail_top + rail_slope), viewport_size.y)]), RAIL_MINT)
-	draw_circle(center, arena_radius + viewport_size.y * 0.37, Color(RAIL_MINT.r, RAIL_MINT.g, RAIL_MINT.b, 0.72))
+	var visual_unit := _hud_unit()
+	var rail_top := maxf(viewport_size.x * 0.08, arena_center.x - arena_radius - visual_unit * 0.11)
+	var rail_slope := minf(visual_unit * 0.36, viewport_size.x * 0.24)
+	draw_colored_polygon(PackedVector2Array([Vector2.ZERO, Vector2(rail_top, 0), Vector2(maxf(0.0, rail_top - rail_slope), viewport_size.y), Vector2(0, viewport_size.y)]), RAIL_MINT)
+	draw_colored_polygon(PackedVector2Array([Vector2(viewport_size.x - rail_top, 0), Vector2(viewport_size.x, 0), viewport_size, Vector2(minf(viewport_size.x, viewport_size.x - rail_top + rail_slope), viewport_size.y)]), RAIL_MINT)
+	draw_circle(center, arena_radius + minf(viewport_size.x, viewport_size.y) * 0.37, Color(RAIL_MINT.r, RAIL_MINT.g, RAIL_MINT.b, 0.72))
 	draw_circle(center, arena_radius + 34.0, Color(WHITE.r, WHITE.g, WHITE.b, 0.16))
 	for layer in 16:
 		var blend := float(layer + 1) / 16.0
@@ -714,59 +714,42 @@ func _draw_reticle(pos: Vector2) -> void:
 
 func _draw_hud() -> void:
 	_draw_gameplay_logo()
-	if wide_layout:
-		_draw_wide_hud()
-		return
+	_draw_responsive_hud()
 
-	var margin := 32.0
-	var left_x := margin
-	var right_x := viewport_size.x - margin
-	var logo_rect := _gameplay_logo_rect()
-	var time_y := logo_rect.end.y + 42.0
-	_draw_text("TIME", Vector2(left_x, time_y), 18, DARK_MINT)
-	_draw_text(_format_time(run_time), Vector2(left_x, time_y + 42.0), 40, DARK_MINT)
-	var score_text := "%07d" % score
-	_draw_text_right("SCORE", Vector2(right_x, 46.0), 18, DARK_MINT)
-	_draw_text_right(score_text, Vector2(right_x, 88.0), 40, DARK_MINT)
-	if combo > 1:
-		_draw_text_right("%dx COMBO" % combo, Vector2(right_x, 126.0), 18, PURPLE)
 
-	var meter_width := minf(340.0, viewport_size.x * 0.3)
-	var meter_y := minf(arena_center.y + arena_radius + 34.0, viewport_size.y - 44.0)
-	var meter := Rect2(Vector2(arena_center.x - meter_width * 0.5, meter_y), Vector2(meter_width, 20.0))
-	_draw_text_centered("BOOST", Vector2(meter.get_center().x, meter.position.y - 13.0), 17, DARK_MINT)
-	_draw_pill(meter, Color(1, 1, 1, 0.82), DARK_MINT, 2.0)
-	var inner := meter.grow(-4.0)
-	inner.size.x *= boost_charge
-	if inner.size.x > 1.0:
-		_draw_pill(inner, LIME if boost_charge > 0.2 else ORANGE_HOT, Color.TRANSPARENT, 0.0)
-	var keycap := Rect2(Vector2(meter.end.x + 14.0, meter.position.y - 8.0), Vector2(84.0, 36.0))
-	_draw_pill(keycap, DARK_MINT, Color.TRANSPARENT, 0.0)
-	_draw_text_centered("SPACE", keycap.get_center() + Vector2(0, 6), 15, WHITE)
+func _hud_unit() -> float:
+	return minf(viewport_size.y, viewport_size.x * 0.62)
+
+
+func _hud_top_safe_area() -> float:
+	return 76.0 if css_viewport_width < 1024.0 else 0.0
 
 
 func _gameplay_logo_rect() -> Rect2:
-	var logo_width := clampf(minf(viewport_size.x * 0.22, viewport_size.y * 0.46), 180.0, 500.0)
+	var visual_unit := _hud_unit()
+	var logo_width := clampf(minf(viewport_size.x * 0.22, visual_unit * 0.46), 110.0, 500.0)
 	var logo_height := logo_width * float(logo_texture.get_height()) / float(logo_texture.get_width())
-	var inset := maxf(24.0, viewport_size.y * 0.075)
-	return Rect2(Vector2(inset, inset), Vector2(logo_width, logo_height))
+	var inset := maxf(18.0, visual_unit * 0.075)
+	return Rect2(Vector2(inset, inset + _hud_top_safe_area()), Vector2(logo_width, logo_height))
 
 
 func _draw_gameplay_logo() -> void:
 	draw_texture_rect(logo_texture, _gameplay_logo_rect(), false)
 
 
-func _draw_wide_hud() -> void:
-	var label_size := roundi(clampf(viewport_size.y * 0.083, 34.0, 76.0))
-	var value_size := roundi(clampf(viewport_size.y * 0.205, 78.0, 178.0))
-	var time_value_size := roundi(clampf(viewport_size.y * 0.15, 68.0, 132.0))
-	var outline_size := maxi(4, roundi(viewport_size.y * 0.011))
-	var shadow_offset := Vector2.ONE * maxf(5.0, viewport_size.y * 0.013)
+func _draw_responsive_hud() -> void:
+	var visual_unit := _hud_unit()
+	var top_safe := _hud_top_safe_area()
+	var label_size := roundi(clampf(visual_unit * 0.063, 20.0, 76.0))
+	var value_size := roundi(clampf(visual_unit * 0.125, 42.0, 178.0))
+	var time_value_size := roundi(clampf(visual_unit * 0.14, 40.0, 132.0))
+	var outline_size := maxi(2, roundi(visual_unit * 0.011))
+	var shadow_offset := Vector2.ONE * maxf(3.0, visual_unit * 0.013)
 
 	_draw_mock_stat(
 		"SCORE",
 		str(score),
-		Vector2(viewport_size.x - viewport_size.y * 0.09, viewport_size.y * 0.145),
+		Vector2(viewport_size.x - visual_unit * 0.09, top_safe + visual_unit * 0.145),
 		-0.18,
 		label_size,
 		value_size,
@@ -777,7 +760,7 @@ func _draw_wide_hud() -> void:
 	_draw_mock_stat(
 		"TIME",
 		_format_time_precise(run_time),
-		Vector2(viewport_size.y * 0.075, viewport_size.y * 0.72),
+		Vector2(visual_unit * 0.075, viewport_size.y - visual_unit * 0.28),
 		-0.10,
 		label_size,
 		time_value_size,
@@ -788,7 +771,7 @@ func _draw_wide_hud() -> void:
 	if combo > 1:
 		_draw_text_with_outline(
 			"%dx COMBO" % combo,
-			Vector2(viewport_size.x - viewport_size.y * 0.37, viewport_size.y * 0.34),
+			Vector2(viewport_size.x - visual_unit * 0.37, top_safe + visual_unit * 0.34),
 			maxi(20, label_size / 2),
 			PURPLE,
 			WHITE,
@@ -796,7 +779,7 @@ func _draw_wide_hud() -> void:
 			Vector2(4.0, 4.0),
 			DARK_MINT
 		)
-	_draw_wide_boost(label_size, outline_size, shadow_offset)
+	_draw_responsive_boost(visual_unit, label_size, outline_size, shadow_offset)
 
 
 func _draw_mock_stat(label: String, value: String, origin: Vector2, rotation: float, label_size: int, value_size: int, align_right: bool, outline_size: int, shadow_offset: Vector2) -> void:
@@ -808,11 +791,11 @@ func _draw_mock_stat(label: String, value: String, origin: Vector2, rotation: fl
 	draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 
 
-func _draw_wide_boost(label_size: int, outline_size: int, shadow_offset: Vector2) -> void:
+func _draw_responsive_boost(visual_unit: float, label_size: int, outline_size: int, shadow_offset: Vector2) -> void:
 	var rotation := 0.20
-	var origin := Vector2(viewport_size.x - viewport_size.y * 0.07, viewport_size.y * 0.68)
-	var meter_width := clampf(viewport_size.y * 0.48, 220.0, 500.0)
-	var meter_height := clampf(viewport_size.y * 0.105, 48.0, 106.0)
+	var origin := Vector2(viewport_size.x - visual_unit * 0.07, viewport_size.y - visual_unit * 0.32)
+	var meter_width := clampf(visual_unit * 0.48, 160.0, 500.0)
+	var meter_height := clampf(visual_unit * 0.105, 36.0, 106.0)
 	draw_set_transform(origin, rotation, Vector2.ONE)
 	var label_width := font.get_string_size("BOOST", HORIZONTAL_ALIGNMENT_LEFT, -1.0, label_size).x
 	_draw_text_with_outline("BOOST", Vector2(-label_width, 0.0), label_size, DARK_MINT, WHITE, outline_size, shadow_offset, DARK_MINT)
