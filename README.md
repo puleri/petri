@@ -1,6 +1,6 @@
 # PETRI
 
-PETRI is a single-player, desktop-browser survival game built with Godot 4.7.2 and GDScript. You are an antibiotic particle inside a bounded culture dish: move with inertia, shoot germs, manage a rechargeable boost, and survive the debris created by splitting threats.
+PETRI is a single-player, desktop-browser survival game built with Godot 4.7.2 and GDScript. You are an antibiotic particle inside a bounded culture dish: move with inertia, shoot germs, manage a rechargeable boost, and survive the debris created by splitting threats. Pulsing membrane auras telegraph every newly entering germ.
 
 ## Controls
 

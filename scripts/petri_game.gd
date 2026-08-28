@@ -13,6 +13,9 @@ const BG := Color("#D7FFF8")
 const MINT := Color("#B2DBD5")
 const DARK_MINT := Color("#70A097")
 const ACCENT_MINT := Color("#6FB2AD")
+const GAME_BG := Color("#B5DAD4")
+const RAIL_MINT := Color("#D4EBE7")
+const DISH_EDGE := Color("#C9E6E1")
 const WHITE := Color("#FFFFFF")
 const ORANGE := Color("#FFD9A6")
 const ORANGE_HOT := Color("#FF9E73")
@@ -34,8 +37,11 @@ const PELLET_LIFETIME := 1.25
 const SPAWN_PROTECTION := 1.5
 const DEBRIS_LIFETIME := 12.0
 const PELLET_POOL_SIZE := 120
+const ARENA_SCALE := 1.15
+const SPAWN_TELEGRAPH_SECONDS := 0.85
 
 var font: Font = preload("res://Excelorate-Font.otf")
+var logo_texture: Texture2D = preload("res://assets/figma/petri-logo.png")
 var germ_specs: Array[GermData] = [
 	preload("res://data/germ_large.tres"),
 	preload("res://data/germ_medium.tres"),
@@ -76,6 +82,7 @@ var screen_shake := 0.0
 var pellets: Array[Dictionary] = []
 var germs: Array[Dictionary] = []
 var debris: Array[Dictionary] = []
+var spawn_warnings: Array[Dictionary] = []
 var popups: Array[Dictionary] = []
 
 
@@ -122,7 +129,7 @@ func _update_layout() -> void:
 		arena_radius = minf(viewport_size.y * 0.39, viewport_size.x * 0.23)
 	else:
 		arena_radius = minf(viewport_size.y * 0.35, viewport_size.x * 0.34)
-	arena_radius = maxf(190.0, arena_radius)
+	arena_radius = maxf(190.0, arena_radius) * ARENA_SCALE
 
 
 func _update_run(delta: float) -> void:
@@ -160,6 +167,7 @@ func _update_run(delta: float) -> void:
 		_fire_pellet()
 
 	_update_pellets(delta)
+	_update_spawn_warnings(delta)
 	_update_germs(delta)
 	_update_debris(delta)
 	_resolve_projectile_hits()
@@ -170,8 +178,8 @@ func _update_run(delta: float) -> void:
 		emit_signal("combo_changed", combo)
 
 	spawn_timer -= delta
-	if spawn_timer <= 0.0 and _active_germ_count() < GameMath.active_germ_cap(run_time):
-		_spawn_germ(_weighted_spawn_tier())
+	if spawn_timer <= 0.0 and _active_germ_count() + spawn_warnings.size() < GameMath.active_germ_cap(run_time):
+		_queue_spawn_warning(_weighted_spawn_tier())
 		spawn_timer = GameMath.spawn_interval(run_time)
 
 
@@ -311,7 +319,7 @@ func _spawn_germ(tier: int, position_override: Variant = null) -> bool:
 			continue
 		var spec := germ_specs[tier]
 		var angle := rng.randf_range(0.0, TAU)
-		var at := arena_center + Vector2.RIGHT.rotated(angle) * (arena_radius - spec.radius - 8.0)
+		var at := _spawn_position(tier, angle)
 		if position_override != null:
 			at = Vector2(position_override)
 		var speed := rng.randf_range(spec.speed_min, spec.speed_max)
@@ -319,6 +327,35 @@ func _spawn_germ(tier: int, position_override: Variant = null) -> bool:
 		germs[i] = {"active": true, "tier": tier, "pos": at, "vel": direction * speed, "hp": spec.hp, "phase": rng.randf_range(0.0, TAU)}
 		return true
 	return false
+
+
+func _spawn_position(tier: int, angle: float) -> Vector2:
+	var spec := germ_specs[tier]
+	return arena_center + Vector2.RIGHT.rotated(angle) * (arena_radius - spec.radius - 8.0)
+
+
+func _queue_spawn_warning(tier: int, angle_override: Variant = null) -> void:
+	var angle := rng.randf_range(0.0, TAU)
+	if angle_override != null:
+		angle = float(angle_override)
+	spawn_warnings.append({
+		"tier": tier,
+		"angle": angle,
+		"life": SPAWN_TELEGRAPH_SECONDS,
+		"duration": SPAWN_TELEGRAPH_SECONDS,
+	})
+
+
+func _update_spawn_warnings(delta: float) -> void:
+	for i in range(spawn_warnings.size() - 1, -1, -1):
+		var warning := spawn_warnings[i]
+		warning.life = float(warning.life) - delta
+		if float(warning.life) <= 0.0:
+			var tier := int(warning.tier)
+			_spawn_germ(tier, _spawn_position(tier, float(warning.angle)))
+			spawn_warnings.remove_at(i)
+		else:
+			spawn_warnings[i] = warning
 
 
 func _spawn_debris(at: Vector2, count: int) -> void:
@@ -395,6 +432,7 @@ func _start_run() -> void:
 	for i in pellets.size(): pellets[i].active = false
 	for i in germs.size(): germs[i].active = false
 	for i in debris.size(): debris[i].active = false
+	spawn_warnings.clear()
 	popups.clear()
 	run_time = 0.0
 	score = 0
@@ -413,8 +451,10 @@ func _start_run() -> void:
 	state = AppState.PLAYING
 	audio.unlock()
 	audio.play_sfx("ui")
-	for i in 5:
-		_spawn_germ([GermData.GermTier.LARGE, GermData.GermTier.MEDIUM, GermData.GermTier.MEDIUM, GermData.GermTier.SMALL, GermData.GermTier.SMALL][i])
+	var opening_tiers := [GermData.GermTier.LARGE, GermData.GermTier.MEDIUM, GermData.GermTier.MEDIUM, GermData.GermTier.SMALL, GermData.GermTier.SMALL]
+	var opening_rotation := rng.randf_range(0.0, TAU)
+	for i in opening_tiers.size():
+		_queue_spawn_warning(opening_tiers[i], opening_rotation + TAU * float(i) / float(opening_tiers.size()))
 	emit_signal("score_changed", score)
 	emit_signal("combo_changed", combo)
 	emit_signal("pause_state_changed", false)
@@ -566,15 +606,23 @@ func _visual_offset() -> Vector2:
 func _draw_game_world() -> void:
 	var offset := _visual_offset()
 	var center := arena_center + offset
+	draw_rect(Rect2(Vector2.ZERO, viewport_size), GAME_BG)
 	if wide_layout:
-		var inset := arena_radius + 58.0
-		draw_colored_polygon(PackedVector2Array([Vector2.ZERO, Vector2(arena_center.x - inset, 0), Vector2(arena_center.x - inset - 86.0, viewport_size.y), Vector2(0, viewport_size.y)]), DARK_MINT)
-		draw_colored_polygon(PackedVector2Array([Vector2(arena_center.x + inset, 0), Vector2(viewport_size.x, 0), viewport_size, Vector2(arena_center.x + inset + 86.0, viewport_size.y)]), DARK_MINT)
-	draw_circle(center, arena_radius + 12.0, MINT)
-	draw_circle(center, arena_radius + 5.0, BG)
+		var rail_top := maxf(0.0, arena_center.x - arena_radius - viewport_size.y * 0.11)
+		var rail_slope := viewport_size.y * 0.36
+		draw_colored_polygon(PackedVector2Array([Vector2.ZERO, Vector2(rail_top, 0), Vector2(maxf(0.0, rail_top - rail_slope), viewport_size.y), Vector2(0, viewport_size.y)]), RAIL_MINT)
+		draw_colored_polygon(PackedVector2Array([Vector2(viewport_size.x - rail_top, 0), Vector2(viewport_size.x, 0), viewport_size, Vector2(minf(viewport_size.x, viewport_size.x - rail_top + rail_slope), viewport_size.y)]), RAIL_MINT)
+	draw_circle(center, arena_radius + viewport_size.y * 0.37, Color(RAIL_MINT.r, RAIL_MINT.g, RAIL_MINT.b, 0.72))
+	draw_circle(center, arena_radius + 34.0, Color(WHITE.r, WHITE.g, WHITE.b, 0.16))
+	for layer in 16:
+		var blend := float(layer + 1) / 16.0
+		var edge_radius := arena_radius + 22.0 * (1.0 - blend)
+		draw_circle(center, edge_radius, DISH_EDGE.lerp(WHITE, blend))
 	draw_circle(center, arena_radius, WHITE)
-	draw_arc(center, arena_radius, 0.0, TAU, 160, ACCENT_MINT, 3.0, true)
+	draw_arc(center, arena_radius, 0.0, TAU, 160, Color(ACCENT_MINT.r, ACCENT_MINT.g, ACCENT_MINT.b, 0.26), 2.0, true)
 
+	for warning in spawn_warnings:
+		_draw_spawn_warning(warning, offset)
 	for d in debris:
 		if bool(d.active): _draw_debris(Vector2(d.pos) + offset, float(d.angle))
 	for g in germs:
@@ -589,6 +637,26 @@ func _draw_game_world() -> void:
 		var alpha := clampf(float(popup.life) / 0.8, 0.0, 1.0)
 		_draw_text_centered(str(popup.text), Vector2(popup.pos) + offset, 24, Color(0.466, 0.251, 0.557, alpha))
 	_draw_hud()
+
+
+func _draw_spawn_warning(warning: Dictionary, offset: Vector2) -> void:
+	var tier := int(warning.tier)
+	var spec := germ_specs[tier]
+	var pos := _spawn_position(tier, float(warning.angle)) + offset
+	var progress := 1.0 - clampf(float(warning.life) / float(warning.duration), 0.0, 1.0)
+	var motion := 0.0 if bool(saved.get("reduced_motion", false)) else sin(progress * TAU * 3.0)
+	var aura_radius := spec.radius + 18.0 + motion * 5.0
+	var color := CYAN if tier != GermData.GermTier.MEDIUM else PURPLE_SOFT
+	draw_circle(pos, aura_radius, Color(color.r, color.g, color.b, 0.09 + progress * 0.1))
+	for ring in 3:
+		var ring_radius := aura_radius + float(ring) * 9.0 - progress * 7.0
+		var ring_alpha := clampf(0.5 - float(ring) * 0.11 + progress * 0.25, 0.12, 0.75)
+		draw_arc(pos, ring_radius, 0.0, TAU, 42, Color(PURPLE.r, PURPLE.g, PURPLE.b, ring_alpha), 2.0, true)
+	var inward := (arena_center - pos).normalized()
+	var side := inward.orthogonal()
+	var tip := pos + inward * (aura_radius + 10.0)
+	var arrow := PackedVector2Array([tip, tip - inward * 13.0 + side * 7.0, tip - inward * 13.0 - side * 7.0])
+	draw_colored_polygon(arrow, Color(LIME.r, LIME.g, LIME.b, 0.72))
 
 
 func _draw_germ(g: Dictionary, offset: Vector2) -> void:
@@ -645,22 +713,27 @@ func _draw_reticle(pos: Vector2) -> void:
 
 
 func _draw_hud() -> void:
+	_draw_gameplay_logo()
+	if wide_layout:
+		_draw_wide_hud()
+		return
+
 	var margin := 32.0
 	var left_x := margin
 	var right_x := viewport_size.x - margin
-	if wide_layout:
-		left_x = 48.0
-		right_x = viewport_size.x - 48.0
-	_draw_text("TIME", Vector2(left_x, 46.0), 18, WHITE if wide_layout else DARK_MINT)
-	_draw_text(_format_time(run_time), Vector2(left_x, 88.0), 40, WHITE if wide_layout else DARK_MINT)
+	var logo_rect := _gameplay_logo_rect()
+	var time_y := logo_rect.end.y + 42.0
+	_draw_text("TIME", Vector2(left_x, time_y), 18, DARK_MINT)
+	_draw_text(_format_time(run_time), Vector2(left_x, time_y + 42.0), 40, DARK_MINT)
 	var score_text := "%07d" % score
-	_draw_text_right("SCORE", Vector2(right_x, 46.0), 18, WHITE if wide_layout else DARK_MINT)
-	_draw_text_right(score_text, Vector2(right_x, 88.0), 40, WHITE if wide_layout else DARK_MINT)
+	_draw_text_right("SCORE", Vector2(right_x, 46.0), 18, DARK_MINT)
+	_draw_text_right(score_text, Vector2(right_x, 88.0), 40, DARK_MINT)
 	if combo > 1:
-		_draw_text_right("%dx COMBO" % combo, Vector2(right_x, 126.0), 18, LIME if wide_layout else PURPLE)
+		_draw_text_right("%dx COMBO" % combo, Vector2(right_x, 126.0), 18, PURPLE)
 
 	var meter_width := minf(340.0, viewport_size.x * 0.3)
-	var meter := Rect2(Vector2(arena_center.x - meter_width * 0.5, arena_center.y + arena_radius + 34.0), Vector2(meter_width, 20.0))
+	var meter_y := minf(arena_center.y + arena_radius + 34.0, viewport_size.y - 44.0)
+	var meter := Rect2(Vector2(arena_center.x - meter_width * 0.5, meter_y), Vector2(meter_width, 20.0))
 	_draw_text_centered("BOOST", Vector2(meter.get_center().x, meter.position.y - 13.0), 17, DARK_MINT)
 	_draw_pill(meter, Color(1, 1, 1, 0.82), DARK_MINT, 2.0)
 	var inner := meter.grow(-4.0)
@@ -670,6 +743,91 @@ func _draw_hud() -> void:
 	var keycap := Rect2(Vector2(meter.end.x + 14.0, meter.position.y - 8.0), Vector2(84.0, 36.0))
 	_draw_pill(keycap, DARK_MINT, Color.TRANSPARENT, 0.0)
 	_draw_text_centered("SPACE", keycap.get_center() + Vector2(0, 6), 15, WHITE)
+
+
+func _gameplay_logo_rect() -> Rect2:
+	var logo_width := clampf(minf(viewport_size.x * 0.22, viewport_size.y * 0.46), 180.0, 500.0)
+	var logo_height := logo_width * float(logo_texture.get_height()) / float(logo_texture.get_width())
+	var inset := maxf(24.0, viewport_size.y * 0.075)
+	return Rect2(Vector2(inset, inset), Vector2(logo_width, logo_height))
+
+
+func _draw_gameplay_logo() -> void:
+	draw_texture_rect(logo_texture, _gameplay_logo_rect(), false)
+
+
+func _draw_wide_hud() -> void:
+	var label_size := roundi(clampf(viewport_size.y * 0.083, 34.0, 76.0))
+	var value_size := roundi(clampf(viewport_size.y * 0.205, 78.0, 178.0))
+	var time_value_size := roundi(clampf(viewport_size.y * 0.15, 68.0, 132.0))
+	var outline_size := maxi(4, roundi(viewport_size.y * 0.011))
+	var shadow_offset := Vector2.ONE * maxf(5.0, viewport_size.y * 0.013)
+
+	_draw_mock_stat(
+		"SCORE",
+		str(score),
+		Vector2(viewport_size.x - viewport_size.y * 0.09, viewport_size.y * 0.145),
+		-0.18,
+		label_size,
+		value_size,
+		true,
+		outline_size,
+		shadow_offset
+	)
+	_draw_mock_stat(
+		"TIME",
+		_format_time_precise(run_time),
+		Vector2(viewport_size.y * 0.075, viewport_size.y * 0.72),
+		-0.10,
+		label_size,
+		time_value_size,
+		false,
+		outline_size,
+		shadow_offset
+	)
+	if combo > 1:
+		_draw_text_with_outline(
+			"%dx COMBO" % combo,
+			Vector2(viewport_size.x - viewport_size.y * 0.37, viewport_size.y * 0.34),
+			maxi(20, label_size / 2),
+			PURPLE,
+			WHITE,
+			maxi(2, outline_size / 2),
+			Vector2(4.0, 4.0),
+			DARK_MINT
+		)
+	_draw_wide_boost(label_size, outline_size, shadow_offset)
+
+
+func _draw_mock_stat(label: String, value: String, origin: Vector2, rotation: float, label_size: int, value_size: int, align_right: bool, outline_size: int, shadow_offset: Vector2) -> void:
+	draw_set_transform(origin, rotation, Vector2.ONE)
+	var label_width := font.get_string_size(label, HORIZONTAL_ALIGNMENT_LEFT, -1.0, label_size).x
+	var value_width := font.get_string_size(value, HORIZONTAL_ALIGNMENT_LEFT, -1.0, value_size).x
+	_draw_text_with_outline(label, Vector2(-label_width if align_right else 0.0, 0.0), label_size, DARK_MINT, WHITE, outline_size, shadow_offset, DARK_MINT)
+	_draw_text_with_outline(value, Vector2(-value_width if align_right else 0.0, value_size * 0.91), value_size, DARK_MINT, WHITE, outline_size, shadow_offset, DARK_MINT)
+	draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
+
+
+func _draw_wide_boost(label_size: int, outline_size: int, shadow_offset: Vector2) -> void:
+	var rotation := 0.20
+	var origin := Vector2(viewport_size.x - viewport_size.y * 0.07, viewport_size.y * 0.68)
+	var meter_width := clampf(viewport_size.y * 0.48, 220.0, 500.0)
+	var meter_height := clampf(viewport_size.y * 0.105, 48.0, 106.0)
+	draw_set_transform(origin, rotation, Vector2.ONE)
+	var label_width := font.get_string_size("BOOST", HORIZONTAL_ALIGNMENT_LEFT, -1.0, label_size).x
+	_draw_text_with_outline("BOOST", Vector2(-label_width, 0.0), label_size, DARK_MINT, WHITE, outline_size, shadow_offset, DARK_MINT)
+	var meter := Rect2(Vector2(-meter_width, meter_height * 0.34), Vector2(meter_width, meter_height))
+	_draw_pill(meter.grow(8.0), Color(WHITE.r, WHITE.g, WHITE.b, 0.28), Color.TRANSPARENT, 0.0)
+	_draw_pill(meter, Color(WHITE.r, WHITE.g, WHITE.b, 0.48), Color.TRANSPARENT, 0.0)
+	var charge_rect := meter.grow(-6.0)
+	charge_rect.size.x *= boost_charge
+	if charge_rect.size.x > charge_rect.size.y:
+		_draw_pill(charge_rect, Color(LIME.r, LIME.g, LIME.b, 0.52), Color.TRANSPARENT, 0.0)
+	var space_size := roundi(meter_height * 0.58)
+	var space_text := "SPACE"
+	var space_width := font.get_string_size(space_text, HORIZONTAL_ALIGNMENT_LEFT, -1.0, space_size).x
+	_draw_text_with_outline(space_text, Vector2(meter.get_center().x - space_width * 0.5, meter.get_center().y + space_size * 0.34), space_size, WHITE, Color(WHITE.r, WHITE.g, WHITE.b, 0.01), 1, Vector2(5.0, 5.0), Color(DARK_MINT.r, DARK_MINT.g, DARK_MINT.b, 0.62))
+	draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 
 
 func _draw_menu() -> void:
@@ -797,6 +955,20 @@ func _draw_text_centered(text: String, at: Vector2, size: int, color: Color) -> 
 	draw_string(font, at - Vector2(width * 0.5, 0), text, HORIZONTAL_ALIGNMENT_LEFT, -1.0, size, color)
 
 
+func _draw_text_with_outline(text: String, at: Vector2, size: int, fill: Color, outline: Color, outline_size: int, shadow_offset: Vector2, shadow: Color) -> void:
+	draw_string_outline(font, at + shadow_offset, text, HORIZONTAL_ALIGNMENT_LEFT, -1.0, size, outline_size + 2, shadow)
+	draw_string(font, at + shadow_offset, text, HORIZONTAL_ALIGNMENT_LEFT, -1.0, size, shadow)
+	draw_string_outline(font, at, text, HORIZONTAL_ALIGNMENT_LEFT, -1.0, size, outline_size, outline)
+	draw_string(font, at, text, HORIZONTAL_ALIGNMENT_LEFT, -1.0, size, fill)
+
+
 func _format_time(seconds: float) -> String:
 	var total := maxi(0, int(floor(seconds)))
 	return "%02d:%02d" % [total / 60, total % 60]
+
+
+func _format_time_precise(seconds: float) -> String:
+	var safe_seconds := maxf(0.0, seconds)
+	var total := int(floor(safe_seconds))
+	var centiseconds := mini(99, int(floor(fmod(safe_seconds, 1.0) * 100.0)))
+	return "%d:%02d.%02d" % [total / 60, total % 60, centiseconds]

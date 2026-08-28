@@ -110,6 +110,7 @@ func _test_resources_and_scene() -> void:
 	_check(large.hp == 3 and large.score == 100, "large germ data resource")
 	_check(medium.hp == 2 and medium.score == 50, "medium germ data resource")
 	_check(small.hp == 1 and small.score == 25, "small germ data resource")
+	_check(load("res://assets/figma/petri-logo.png") != null, "Figma PETRI logo loads")
 	_check(load("res://scenes/main.tscn") != null, "main scene loads")
 
 
@@ -122,6 +123,20 @@ func _test_long_run_pool_stability() -> void:
 	audio_manager.call("apply_levels", 0.0, 0.0)
 	audio_manager.set("_unlocked", true)
 	game.call("_start_run")
+	var opening_warnings: Array = game.get("spawn_warnings")
+	_check(opening_warnings.size() == 5, "opening germs receive spawn auras")
+	game.set("spawn_protection_left", 9999.0)
+	game.call("_update_run", 0.4)
+	var early_germs: Array = game.get("germs")
+	var early_active := 0
+	for germ in early_germs:
+		if bool(germ.active): early_active += 1
+	_check(early_active == 0 and Array(game.get("spawn_warnings")).size() == 5, "spawn aura appears before germ activation")
+	game.call("_update_run", 0.5)
+	var entered_active := 0
+	for germ in early_germs:
+		if bool(germ.active): entered_active += 1
+	_check(entered_active == 5 and Array(game.get("spawn_warnings")).is_empty(), "germs enter after the aura telegraph")
 	for i in 6000:
 		game.set("spawn_protection_left", 9999.0)
 		game.call("_update_run", 0.1)
