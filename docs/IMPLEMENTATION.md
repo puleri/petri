@@ -2,7 +2,7 @@
 
 ## Responsive layout
 
-The arena radius is derived every frame from the viewport and receives a 1.15× play-space scale. At ultrawide aspect ratios, angled dark-mint rails hold the side HUD. At standard and compact desktop ratios, counters remain in anchored top corners and the boost meter sits below the arena. Widths below 1024 CSS pixels show the keyboard-and-mouse recommendation.
+The arena radius is derived every frame from the viewport and receives a 1.3225× play-space scale (15% larger than the previous 1.15× treatment). Every viewport uses the angled mockup-style score, time, boost, rails, and logo composition through a shared responsive unit. Widths below 1024 CSS pixels reserve a top safe area for the keyboard-and-mouse recommendation.
 
 Target compositions are 1280×720, 1920×1080, and 2560×1080.
 
@@ -16,7 +16,21 @@ Target compositions are 1280×720, 1920×1080, and 2560×1080.
 - Spawn protection: 1.5 s
 - Lethal membrane impact: outward speed over 240 px/s
 - Debris lifetime: 12 s
-- Spawn telegraph: 0.85 s pulsing aura before activation
+- Germ spawn telegraph: 1.02 s pulsing aura before activation
+- Item drop telegraph: 0.85 s item-specific aura before pickup activation
+
+## Elite items
+
+- Tank elite: first at 20 s, then every 30 s; radius 66, 18 HP, speed 38–58, 600 score, four debris, no split
+- Item aura: 0.85 s; pickup lifetime: 15 s; pickup radius: 18
+- Permanent item cap: level 3; all-max drops grant one random 15 s level-four overcharge
+- Spinning hitter: 1–4 orbiters at radius 58 and 2.8 rad/s
+- AOE: radii 130/150/170/190; intervals 5/4.25/3.5/2.75 s
+- Turrets: one per level, 300 range and 0.8 s cadence; overcharge gives 360 range and 0.4 s cadence
+- Ricochet: 1–4 membrane bounces with 1.6–2.65 s projectile lifetimes
+- Spread: 3/5/7/9 pellets at symmetric 12° steps
+- Leave-behinds: 1.4/1.1/0.85/0.6 s mine cadence; 55 radius or 70 while overcharged
+- Fixed pools: 36 germs, 80 debris, 240 projectiles, 3 turrets, 48 mines, and 4 pickup/aura slots
 
 ## Figma handoff
 

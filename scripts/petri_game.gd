@@ -6,8 +6,12 @@ signal combo_changed(multiplier: int)
 signal boost_charge_changed(charge: float)
 signal pause_state_changed(paused: bool)
 signal game_over(score: int, survival_time: float, reason: String)
+signal item_warning_started(item_type: int, position: Vector2)
+signal item_collected(item_type: int, level: int)
+signal item_overcharge_changed(item_type: int, seconds_left: float)
 
 enum AppState { MENU, HOW_TO, PLAYING, PAUSED, SETTINGS, GAME_OVER }
+enum ProjectileOwner { PLAYER, TURRET }
 
 const BG := Color("#D7FFF8")
 const MINT := Color("#B2DBD5")
@@ -36,9 +40,24 @@ const PELLET_SPEED := 520.0
 const PELLET_LIFETIME := 1.25
 const SPAWN_PROTECTION := 1.5
 const DEBRIS_LIFETIME := 12.0
-const PELLET_POOL_SIZE := 120
-const ARENA_SCALE := 1.15
-const SPAWN_TELEGRAPH_SECONDS := 0.85
+const PELLET_POOL_SIZE := 240
+const TURRET_POOL_SIZE := 3
+const MINE_POOL_SIZE := 48
+const PICKUP_POOL_SIZE := 4
+const ARENA_SCALE := 1.3225
+const GERM_SPAWN_TELEGRAPH_SECONDS := 1.02
+const ITEM_SPAWN_TELEGRAPH_SECONDS := 0.85
+const ITEM_PICKUP_LIFETIME := 15.0
+const ITEM_PICKUP_RADIUS := 18.0
+const HITTER_ORBIT_RADIUS := 58.0
+const HITTER_ANGULAR_SPEED := 2.8
+const HITTER_HIT_COOLDOWN := 0.35
+const AOE_WARNING_SECONDS := 0.6
+const TURRET_BULLET_SPEED := 480.0
+const TURRET_BULLET_LIFETIME := 1.5
+const MINE_ARM_SECONDS := 0.25
+const MINE_LIFETIME := 8.0
+const MINE_TRIGGER_RADIUS := 30.0
 
 var font: Font = preload("res://Excelorate-Font.otf")
 var logo_texture: Texture2D = preload("res://assets/figma/petri-logo.png")
@@ -46,6 +65,7 @@ var germ_specs: Array[GermData] = [
 	preload("res://data/germ_large.tres"),
 	preload("res://data/germ_medium.tres"),
 	preload("res://data/germ_small.tres"),
+	preload("res://data/germ_elite.tres"),
 ]
 
 @onready var audio: PetriAudio = $AudioManager
@@ -76,13 +96,26 @@ var score := 0
 var combo := 1
 var last_kill_time := -999.0
 var spawn_timer := 0.0
+var elite_timer := GameMath.ELITE_FIRST_SPAWN
 var death_reason := ""
 var screen_shake := 0.0
+var hitter_angle := 0.0
+var aoe_timer := INF
+var aoe_warning_active := false
+var aoe_flash_left := 0.0
+var mine_timer := INF
+var overcharge_item := -1
+var overcharge_left := 0.0
 
 var pellets: Array[Dictionary] = []
 var germs: Array[Dictionary] = []
 var debris: Array[Dictionary] = []
 var spawn_warnings: Array[Dictionary] = []
+var item_warnings: Array[Dictionary] = []
+var pickups: Array[Dictionary] = []
+var turrets: Array[Dictionary] = []
+var mines: Array[Dictionary] = []
+var item_levels: Array[int] = []
 var popups: Array[Dictionary] = []
 
 
@@ -100,11 +133,20 @@ func _ready() -> void:
 
 func _create_pools() -> void:
 	for i in PELLET_POOL_SIZE:
-		pellets.append({"active": false, "pos": Vector2.ZERO, "vel": Vector2.ZERO, "life": 0.0})
+		pellets.append({"active": false, "pos": Vector2.ZERO, "vel": Vector2.ZERO, "life": 0.0, "bounces": 0, "owner": ProjectileOwner.PLAYER})
 	for i in GameMath.MAX_GERMS:
-		germs.append({"active": false, "tier": GermData.GermTier.LARGE, "pos": Vector2.ZERO, "vel": Vector2.ZERO, "hp": 0, "phase": 0.0})
+		germs.append({"active": false, "tier": GermData.GermTier.LARGE, "pos": Vector2.ZERO, "vel": Vector2.ZERO, "hp": 0, "phase": 0.0, "hitter_cooldown": 0.0})
 	for i in GameMath.MAX_FRAGMENTS:
-		debris.append({"active": false, "pos": Vector2.ZERO, "vel": Vector2.ZERO, "life": 0.0, "angle": 0.0, "spin": 0.0})
+		debris.append({"active": false, "pos": Vector2.ZERO, "vel": Vector2.ZERO, "life": 0.0, "angle": 0.0, "spin": 0.0, "hitter_cooldown": 0.0})
+	for i in TURRET_POOL_SIZE:
+		turrets.append({"active": false, "pos": Vector2.ZERO, "cooldown": 0.0, "angle": 0.0})
+	for i in MINE_POOL_SIZE:
+		mines.append({"active": false, "pos": Vector2.ZERO, "life": 0.0, "arm": 0.0, "phase": 0.0, "blast_radius": 55.0})
+	for i in PICKUP_POOL_SIZE:
+		item_warnings.append({"active": false, "item_type": 0, "pos": Vector2.ZERO, "life": 0.0, "duration": ITEM_SPAWN_TELEGRAPH_SECONDS, "overcharge": false})
+		pickups.append({"active": false, "item_type": 0, "pos": Vector2.ZERO, "life": 0.0, "phase": 0.0, "overcharge": false})
+	for i in ItemData.ItemType.size():
+		item_levels.append(0)
 
 
 func _process(delta: float) -> void:
@@ -136,6 +178,7 @@ func _update_run(delta: float) -> void:
 	run_time += delta
 	spawn_protection_left = maxf(0.0, spawn_protection_left - delta)
 	fire_cooldown = maxf(0.0, fire_cooldown - delta)
+	_update_overcharge(delta)
 	emit_signal("run_time_changed", run_time)
 
 	var movement := Input.get_vector("move_left", "move_right", "move_up", "move_down")
@@ -168,8 +211,14 @@ func _update_run(delta: float) -> void:
 
 	_update_pellets(delta)
 	_update_spawn_warnings(delta)
+	_update_item_warnings(delta)
+	_update_pickups(delta)
 	_update_germs(delta)
 	_update_debris(delta)
+	_update_turrets(delta)
+	_update_mines(delta)
+	_update_spinning_hitters(delta)
+	_update_aoe(delta)
 	_resolve_projectile_hits()
 	_resolve_hostile_hits()
 
@@ -178,9 +227,15 @@ func _update_run(delta: float) -> void:
 		emit_signal("combo_changed", combo)
 
 	spawn_timer -= delta
-	if spawn_timer <= 0.0 and _active_germ_count() + spawn_warnings.size() < GameMath.active_germ_cap(run_time):
+	if spawn_timer <= 0.0 and _active_regular_germ_count() + _pending_regular_germ_count() < GameMath.active_germ_cap(run_time):
 		_queue_spawn_warning(_weighted_spawn_tier())
 		spawn_timer = GameMath.spawn_interval(run_time)
+
+	elite_timer -= delta
+	if elite_timer <= 0.0 and not _elite_exists():
+		_queue_spawn_warning(GermData.GermTier.ELITE)
+		elite_timer = GameMath.ELITE_SPAWN_INTERVAL
+		audio.play_sfx("elite_spawn")
 
 
 func _resolve_player_membrane() -> void:
@@ -201,18 +256,50 @@ func _resolve_player_membrane() -> void:
 
 
 func _fire_pellet() -> void:
+	var spread_level := _effective_item_level(ItemData.ItemType.SPREAD)
+	var ricochet_level := _effective_item_level(ItemData.ItemType.RICOCHET)
+	var angles := ItemData.spread_angles(spread_level)
+	var center_direction := Vector2.RIGHT.rotated(player_facing)
+	var center_spawned := _spawn_projectile(
+		player_pos + center_direction * (PLAYER_RADIUS + 11.0),
+		center_direction,
+		PELLET_SPEED,
+		ItemData.ricochet_lifetime(ricochet_level),
+		ItemData.ricochet_bounces(ricochet_level),
+		ProjectileOwner.PLAYER,
+		player_velocity * 0.22
+	)
+	if not center_spawned:
+		return
+	for i in range(1, angles.size()):
+		var direction := Vector2.RIGHT.rotated(player_facing + float(angles[i]))
+		_spawn_projectile(
+			player_pos + direction * (PLAYER_RADIUS + 11.0),
+			direction,
+			PELLET_SPEED,
+			ItemData.ricochet_lifetime(ricochet_level),
+			ItemData.ricochet_bounces(ricochet_level),
+			ProjectileOwner.PLAYER,
+			player_velocity * 0.22
+		)
+	fire_cooldown = FIRE_INTERVAL
+	audio.play_sfx("fire")
+
+
+func _spawn_projectile(at: Vector2, direction: Vector2, speed: float, life: float, bounces: int, owner: int, inherited_velocity: Vector2 = Vector2.ZERO) -> bool:
 	for i in pellets.size():
-		if not bool(pellets[i].active):
-			var direction := Vector2.RIGHT.rotated(player_facing)
-			pellets[i] = {
-				"active": true,
-				"pos": player_pos + direction * (PLAYER_RADIUS + 11.0),
-				"vel": direction * PELLET_SPEED + player_velocity * 0.22,
-				"life": PELLET_LIFETIME,
-			}
-			fire_cooldown = FIRE_INTERVAL
-			audio.play_sfx("fire")
-			return
+		if bool(pellets[i].active):
+			continue
+		pellets[i] = {
+			"active": true,
+			"pos": at,
+			"vel": direction.normalized() * speed + inherited_velocity,
+			"life": life,
+			"bounces": bounces,
+			"owner": owner,
+		}
+		return true
+	return false
 
 
 func _update_pellets(delta: float) -> void:
@@ -222,7 +309,16 @@ func _update_pellets(delta: float) -> void:
 		var p := pellets[i]
 		p.pos += p.vel * delta
 		p.life = float(p.life) - delta
-		if float(p.life) <= 0.0 or (Vector2(p.pos) - arena_center).length() > arena_radius:
+		var edge := Vector2(p.pos) - arena_center
+		if edge.length() + 5.0 > arena_radius:
+			if int(p.bounces) > 0:
+				var normal := edge.normalized()
+				p.pos = arena_center + normal * (arena_radius - 5.0)
+				p.vel = Vector2(p.vel).bounce(normal)
+				p.bounces = int(p.bounces) - 1
+			else:
+				p.active = false
+		if float(p.life) <= 0.0:
 			p.active = false
 		pellets[i] = p
 
@@ -233,6 +329,7 @@ func _update_germs(delta: float) -> void:
 		if not bool(germs[i].active):
 			continue
 		var g := germs[i]
+		g.hitter_cooldown = maxf(0.0, float(g.hitter_cooldown) - delta)
 		var target_dir := (player_pos - Vector2(g.pos)).normalized()
 		var current_speed := Vector2(g.vel).length()
 		var wanted := target_dir * current_speed
@@ -253,6 +350,7 @@ func _update_debris(delta: float) -> void:
 		if not bool(debris[i].active):
 			continue
 		var d := debris[i]
+		d.hitter_cooldown = maxf(0.0, float(d.hitter_cooldown) - delta)
 		d.pos += Vector2(d.vel) * delta
 		d.angle = float(d.angle) + float(d.spin) * delta
 		d.life = float(d.life) - delta
@@ -278,11 +376,7 @@ func _resolve_projectile_hits() -> void:
 			var spec := germ_specs[int(germs[gi].tier)]
 			if pellet_pos.distance_squared_to(Vector2(germs[gi].pos)) <= pow(spec.radius + 5.0, 2.0):
 				pellets[pi].active = false
-				germs[gi].hp = int(germs[gi].hp) - 1
-				if int(germs[gi].hp) <= 0:
-					_destroy_germ(gi)
-				else:
-					audio.play_sfx("impact")
+				_damage_germ(gi, 1)
 				hit = true
 				break
 		if hit:
@@ -292,9 +386,192 @@ func _resolve_projectile_hits() -> void:
 				continue
 			if pellet_pos.distance_squared_to(Vector2(debris[di].pos)) <= 225.0:
 				pellets[pi].active = false
-				debris[di].active = false
-				_award_kill(10, Vector2(debris[di].pos))
+				_destroy_debris(di)
 				break
+
+
+func _damage_germ(index: int, amount: int) -> bool:
+	if index < 0 or index >= germs.size() or not bool(germs[index].active):
+		return false
+	germs[index].hp = int(germs[index].hp) - amount
+	if int(germs[index].hp) <= 0:
+		_destroy_germ(index)
+	else:
+		audio.play_sfx("impact")
+	return true
+
+
+func _destroy_debris(index: int) -> bool:
+	if index < 0 or index >= debris.size() or not bool(debris[index].active):
+		return false
+	var at := Vector2(debris[index].pos)
+	debris[index].active = false
+	_award_kill(10, at)
+	return true
+
+
+func _damage_area(at: Vector2, radius: float, amount: int) -> void:
+	var germ_targets: Array[int] = []
+	var debris_targets: Array[int] = []
+	for i in germs.size():
+		if not bool(germs[i].active):
+			continue
+		var spec := germ_specs[int(germs[i].tier)]
+		if at.distance_squared_to(Vector2(germs[i].pos)) <= pow(radius + spec.radius * 0.5, 2.0):
+			germ_targets.append(i)
+	for i in debris.size():
+		if bool(debris[i].active) and at.distance_squared_to(Vector2(debris[i].pos)) <= pow(radius + 8.0, 2.0):
+			debris_targets.append(i)
+	for index in germ_targets:
+		_damage_germ(index, amount)
+	for index in debris_targets:
+		_destroy_debris(index)
+
+
+func _update_spinning_hitters(delta: float) -> void:
+	var level := _effective_item_level(ItemData.ItemType.SPINNING_HITTER)
+	var count := ItemData.hitter_count(level)
+	if count <= 0:
+		return
+	hitter_angle = fmod(hitter_angle + HITTER_ANGULAR_SPEED * delta, TAU)
+	for hitter in count:
+		var angle := hitter_angle + TAU * float(hitter) / float(count)
+		var hitter_pos := player_pos + Vector2.RIGHT.rotated(angle) * HITTER_ORBIT_RADIUS
+		for gi in germs.size():
+			if not bool(germs[gi].active) or float(germs[gi].hitter_cooldown) > 0.0:
+				continue
+			var spec := germ_specs[int(germs[gi].tier)]
+			if hitter_pos.distance_squared_to(Vector2(germs[gi].pos)) <= pow(spec.radius + 10.0, 2.0):
+				germs[gi].hitter_cooldown = HITTER_HIT_COOLDOWN
+				_damage_germ(gi, 1)
+		for di in debris.size():
+			if not bool(debris[di].active) or float(debris[di].hitter_cooldown) > 0.0:
+				continue
+			if hitter_pos.distance_squared_to(Vector2(debris[di].pos)) <= 324.0:
+				debris[di].hitter_cooldown = HITTER_HIT_COOLDOWN
+				_destroy_debris(di)
+
+
+func _deploy_turret(at: Vector2) -> bool:
+	for i in turrets.size():
+		if bool(turrets[i].active):
+			continue
+		turrets[i] = {"active": true, "pos": _clamp_pickup_position(at), "cooldown": 0.0, "angle": player_facing}
+		return true
+	return false
+
+
+func _update_turrets(delta: float) -> void:
+	var level := _effective_item_level(ItemData.ItemType.TURRET)
+	if level <= 0:
+		return
+	var fire_interval := ItemData.turret_interval(level)
+	var target_range := ItemData.turret_range(level)
+	for i in turrets.size():
+		if not bool(turrets[i].active):
+			continue
+		var turret := turrets[i]
+		turret.cooldown = maxf(0.0, float(turret.cooldown) - delta)
+		var target: Variant = _nearest_hostile_position(Vector2(turret.pos), target_range)
+		if target != null:
+			var direction := (Vector2(target) - Vector2(turret.pos)).normalized()
+			turret.angle = direction.angle()
+			if float(turret.cooldown) <= 0.0:
+				if _spawn_projectile(Vector2(turret.pos) + direction * 16.0, direction, TURRET_BULLET_SPEED, TURRET_BULLET_LIFETIME, 0, ProjectileOwner.TURRET):
+					turret.cooldown = fire_interval
+					audio.play_sfx("turret")
+				else:
+					turret.cooldown = 0.1
+		turrets[i] = turret
+
+
+func _nearest_hostile_position(from: Vector2, maximum_range: float) -> Variant:
+	var best_distance := maximum_range * maximum_range
+	var best_position: Variant = null
+	for g in germs:
+		if not bool(g.active):
+			continue
+		var distance := from.distance_squared_to(Vector2(g.pos))
+		if distance < best_distance:
+			best_distance = distance
+			best_position = Vector2(g.pos)
+	for d in debris:
+		if not bool(d.active):
+			continue
+		var distance := from.distance_squared_to(Vector2(d.pos))
+		if distance < best_distance:
+			best_distance = distance
+			best_position = Vector2(d.pos)
+	return best_position
+
+
+func _update_mines(delta: float) -> void:
+	var level := _effective_item_level(ItemData.ItemType.LEAVE_BEHIND)
+	if level > 0 and player_velocity.length() > 30.0:
+		mine_timer -= delta
+		if mine_timer <= 0.0:
+			_spawn_mine(level)
+			mine_timer += ItemData.mine_interval(level)
+	for i in mines.size():
+		if not bool(mines[i].active):
+			continue
+		var mine := mines[i]
+		mine.life = float(mine.life) - delta
+		mine.arm = maxf(0.0, float(mine.arm) - delta)
+		mine.phase = float(mine.phase) + delta
+		if float(mine.life) <= 0.0:
+			mine.active = false
+		elif float(mine.arm) <= 0.0 and _hostile_within(Vector2(mine.pos), MINE_TRIGGER_RADIUS):
+			mine.active = false
+			_damage_area(Vector2(mine.pos), float(mine.blast_radius), 1)
+			audio.play_sfx("mine")
+		mines[i] = mine
+
+
+func _spawn_mine(level: int) -> bool:
+	var behind := Vector2.ZERO
+	if player_velocity.length_squared() > 1.0:
+		behind = -player_velocity.normalized() * (PLAYER_RADIUS + 8.0)
+	for i in mines.size():
+		if bool(mines[i].active):
+			continue
+		mines[i] = {
+			"active": true,
+			"pos": _clamp_pickup_position(player_pos + behind),
+			"life": MINE_LIFETIME,
+			"arm": MINE_ARM_SECONDS,
+			"phase": 0.0,
+			"blast_radius": ItemData.mine_blast_radius(level),
+		}
+		return true
+	return false
+
+
+func _hostile_within(at: Vector2, radius: float) -> bool:
+	var radius_squared := radius * radius
+	for g in germs:
+		if bool(g.active) and at.distance_squared_to(Vector2(g.pos)) <= radius_squared:
+			return true
+	for d in debris:
+		if bool(d.active) and at.distance_squared_to(Vector2(d.pos)) <= radius_squared:
+			return true
+	return false
+
+
+func _update_aoe(delta: float) -> void:
+	aoe_flash_left = maxf(0.0, aoe_flash_left - delta)
+	var level := _effective_item_level(ItemData.ItemType.AOE)
+	if level <= 0:
+		aoe_warning_active = false
+		return
+	aoe_timer -= delta
+	aoe_warning_active = aoe_timer <= AOE_WARNING_SECONDS
+	if aoe_timer <= 0.0:
+		_damage_area(player_pos, ItemData.aoe_radius(level), 1)
+		aoe_timer = ItemData.aoe_interval(level)
+		aoe_warning_active = false
+		aoe_flash_left = 0.22
+		audio.play_sfx("aoe")
 
 
 func _resolve_hostile_hits() -> void:
@@ -314,7 +591,9 @@ func _resolve_hostile_hits() -> void:
 
 
 func _spawn_germ(tier: int, position_override: Variant = null) -> bool:
-	for i in germs.size():
+	var first_index := GameMath.MAX_REGULAR_GERMS if tier == GermData.GermTier.ELITE else 0
+	var end_index := GameMath.MAX_GERMS if tier == GermData.GermTier.ELITE else GameMath.MAX_REGULAR_GERMS
+	for i in range(first_index, end_index):
 		if bool(germs[i].active):
 			continue
 		var spec := germ_specs[tier]
@@ -324,7 +603,7 @@ func _spawn_germ(tier: int, position_override: Variant = null) -> bool:
 			at = Vector2(position_override)
 		var speed := rng.randf_range(spec.speed_min, spec.speed_max)
 		var direction := (player_pos - at).normalized().rotated(rng.randf_range(-0.5, 0.5))
-		germs[i] = {"active": true, "tier": tier, "pos": at, "vel": direction * speed, "hp": spec.hp, "phase": rng.randf_range(0.0, TAU)}
+		germs[i] = {"active": true, "tier": tier, "pos": at, "vel": direction * speed, "hp": spec.hp, "phase": rng.randf_range(0.0, TAU), "hitter_cooldown": 0.0}
 		return true
 	return false
 
@@ -341,8 +620,8 @@ func _queue_spawn_warning(tier: int, angle_override: Variant = null) -> void:
 	spawn_warnings.append({
 		"tier": tier,
 		"angle": angle,
-		"life": SPAWN_TELEGRAPH_SECONDS,
-		"duration": SPAWN_TELEGRAPH_SECONDS,
+		"life": GERM_SPAWN_TELEGRAPH_SECONDS,
+		"duration": GERM_SPAWN_TELEGRAPH_SECONDS,
 	})
 
 
@@ -358,6 +637,134 @@ func _update_spawn_warnings(delta: float) -> void:
 			spawn_warnings[i] = warning
 
 
+func _queue_item_warning(at: Vector2) -> bool:
+	var drop := _select_item_drop()
+	var clamped_position := _clamp_pickup_position(at)
+	for i in item_warnings.size():
+		if bool(item_warnings[i].active):
+			continue
+		item_warnings[i] = {
+			"active": true,
+			"item_type": int(drop.item_type),
+			"pos": clamped_position,
+			"life": ITEM_SPAWN_TELEGRAPH_SECONDS,
+			"duration": ITEM_SPAWN_TELEGRAPH_SECONDS,
+			"overcharge": bool(drop.overcharge),
+		}
+		emit_signal("item_warning_started", int(drop.item_type), clamped_position)
+		return true
+	return false
+
+
+func _select_item_drop() -> Dictionary:
+	var candidates: Array[int] = []
+	for item_type in ItemData.ItemType.size():
+		if item_levels[item_type] < ItemData.MAX_LEVEL:
+			candidates.append(item_type)
+	if not candidates.is_empty():
+		return {"item_type": candidates[rng.randi_range(0, candidates.size() - 1)], "overcharge": false}
+	return {"item_type": rng.randi_range(0, ItemData.ItemType.size() - 1), "overcharge": true}
+
+
+func _clamp_pickup_position(at: Vector2) -> Vector2:
+	var from_center := at - arena_center
+	var limit := arena_radius - ITEM_PICKUP_RADIUS - 12.0
+	if from_center.length() <= limit:
+		return at
+	return arena_center + from_center.normalized() * limit
+
+
+func _update_item_warnings(delta: float) -> void:
+	for i in item_warnings.size():
+		if not bool(item_warnings[i].active):
+			continue
+		var warning := item_warnings[i]
+		warning.life = float(warning.life) - delta
+		if float(warning.life) <= 0.0:
+			_activate_pickup(int(warning.item_type), Vector2(warning.pos), bool(warning.overcharge))
+			warning.active = false
+		item_warnings[i] = warning
+
+
+func _activate_pickup(item_type: int, at: Vector2, is_overcharge: bool) -> bool:
+	for i in pickups.size():
+		if bool(pickups[i].active):
+			continue
+		pickups[i] = {
+			"active": true,
+			"item_type": item_type,
+			"pos": at,
+			"life": ITEM_PICKUP_LIFETIME,
+			"phase": 0.0,
+			"overcharge": is_overcharge,
+		}
+		audio.play_sfx("item_appear")
+		return true
+	return false
+
+
+func _update_pickups(delta: float) -> void:
+	for i in pickups.size():
+		if not bool(pickups[i].active):
+			continue
+		var pickup := pickups[i]
+		pickup.life = float(pickup.life) - delta
+		pickup.phase = float(pickup.phase) + delta
+		if float(pickup.life) <= 0.0:
+			pickup.active = false
+		elif player_pos.distance_squared_to(Vector2(pickup.pos)) <= pow(PLAYER_RADIUS + ITEM_PICKUP_RADIUS, 2.0):
+			_collect_pickup(pickup)
+			pickup.active = false
+		pickups[i] = pickup
+
+
+func _collect_pickup(pickup: Dictionary) -> void:
+	var item_type := int(pickup.item_type)
+	var collected_level := ItemData.OVERCHARGE_LEVEL
+	var popup_text := "%s  OVERCHARGE" % ItemData.display_name(item_type)
+	if bool(pickup.overcharge):
+		_start_overcharge(item_type)
+	else:
+		item_levels[item_type] = mini(ItemData.MAX_LEVEL, item_levels[item_type] + 1)
+		collected_level = item_levels[item_type]
+		popup_text = "%s  LVL %d" % [ItemData.display_name(item_type), collected_level]
+		if item_type == ItemData.ItemType.TURRET:
+			_deploy_turret(player_pos)
+		elif item_type == ItemData.ItemType.AOE:
+			aoe_timer = minf(aoe_timer, ItemData.aoe_interval(_effective_item_level(item_type)))
+		elif item_type == ItemData.ItemType.LEAVE_BEHIND:
+			mine_timer = minf(mine_timer, ItemData.mine_interval(_effective_item_level(item_type)))
+	popups.append({"pos": player_pos, "text": popup_text, "life": 1.2, "duration": 1.2, "item_type": item_type})
+	audio.play_sfx("item_pickup")
+	emit_signal("item_collected", item_type, collected_level)
+
+
+func _start_overcharge(item_type: int) -> void:
+	overcharge_item = item_type
+	overcharge_left = ItemData.OVERCHARGE_SECONDS
+	if item_type == ItemData.ItemType.AOE:
+		aoe_timer = minf(aoe_timer, ItemData.aoe_interval(ItemData.OVERCHARGE_LEVEL))
+	elif item_type == ItemData.ItemType.LEAVE_BEHIND:
+		mine_timer = minf(mine_timer, ItemData.mine_interval(ItemData.OVERCHARGE_LEVEL))
+	emit_signal("item_overcharge_changed", item_type, overcharge_left)
+
+
+func _update_overcharge(delta: float) -> void:
+	if overcharge_item < 0:
+		return
+	overcharge_left = maxf(0.0, overcharge_left - delta)
+	if overcharge_left <= 0.0:
+		var expired_item := overcharge_item
+		overcharge_item = -1
+		emit_signal("item_overcharge_changed", expired_item, 0.0)
+
+
+func _effective_item_level(item_type: int) -> int:
+	if overcharge_item == item_type and overcharge_left > 0.0:
+		return ItemData.OVERCHARGE_LEVEL
+	return item_levels[item_type]
+
+
 func _spawn_debris(at: Vector2, count: int) -> void:
 	var made := 0
 	for i in debris.size():
@@ -371,6 +778,7 @@ func _spawn_debris(at: Vector2, count: int) -> void:
 			"life": DEBRIS_LIFETIME,
 			"angle": angle,
 			"spin": rng.randf_range(-4.5, 4.5),
+			"hitter_cooldown": 0.0,
 		}
 		made += 1
 		if made >= count:
@@ -388,6 +796,8 @@ func _destroy_germ(index: int) -> void:
 		var offset := Vector2.RIGHT.rotated(TAU * float(child) / maxf(1.0, float(split.children)) + rng.randf_range(-0.25, 0.25)) * 16.0
 		_spawn_germ(int(split.child_tier), at + offset)
 	_spawn_debris(at, int(split.fragments))
+	if tier == GermData.GermTier.ELITE:
+		_queue_item_warning(at)
 	audio.play_sfx("split")
 	if not bool(saved.reduced_motion):
 		screen_shake = maxf(screen_shake, 0.34)
@@ -398,7 +808,7 @@ func _award_kill(base: int, at: Vector2) -> void:
 	last_kill_time = run_time
 	var points := GameMath.awarded_score(base, combo)
 	score += points
-	popups.append({"pos": at, "text": "+%d%s" % [points, "   %dx" % combo if combo > 1 else ""], "life": 0.8})
+	popups.append({"pos": at, "text": "+%d%s" % [points, "   %dx" % combo if combo > 1 else ""], "life": 0.8, "duration": 0.8, "item_type": -1})
 	emit_signal("score_changed", score)
 	emit_signal("combo_changed", combo)
 
@@ -420,6 +830,32 @@ func _active_germ_count() -> int:
 	return count
 
 
+func _active_regular_germ_count() -> int:
+	var count := 0
+	for g in germs:
+		if bool(g.active) and int(g.tier) != GermData.GermTier.ELITE:
+			count += 1
+	return count
+
+
+func _pending_regular_germ_count() -> int:
+	var count := 0
+	for warning in spawn_warnings:
+		if int(warning.tier) != GermData.GermTier.ELITE:
+			count += 1
+	return count
+
+
+func _elite_exists() -> bool:
+	for g in germs:
+		if bool(g.active) and int(g.tier) == GermData.GermTier.ELITE:
+			return true
+	for warning in spawn_warnings:
+		if int(warning.tier) == GermData.GermTier.ELITE:
+			return true
+	return false
+
+
 func _update_popups(delta: float) -> void:
 	for i in range(popups.size() - 1, -1, -1):
 		popups[i].life = float(popups[i].life) - delta
@@ -432,12 +868,25 @@ func _start_run() -> void:
 	for i in pellets.size(): pellets[i].active = false
 	for i in germs.size(): germs[i].active = false
 	for i in debris.size(): debris[i].active = false
+	for i in turrets.size(): turrets[i].active = false
+	for i in mines.size(): mines[i].active = false
+	for i in pickups.size(): pickups[i].active = false
+	for i in item_warnings.size(): item_warnings[i].active = false
+	for i in item_levels.size(): item_levels[i] = 0
 	spawn_warnings.clear()
 	popups.clear()
 	run_time = 0.0
 	score = 0
 	combo = 1
 	last_kill_time = -999.0
+	elite_timer = GameMath.ELITE_FIRST_SPAWN
+	hitter_angle = 0.0
+	aoe_timer = INF
+	aoe_warning_active = false
+	aoe_flash_left = 0.0
+	mine_timer = INF
+	overcharge_item = -1
+	overcharge_left = 0.0
 	boost_charge = 1.0
 	boost_delay = 0.0
 	boost_active = false
@@ -457,6 +906,7 @@ func _start_run() -> void:
 		_queue_spawn_warning(opening_tiers[i], opening_rotation + TAU * float(i) / float(opening_tiers.size()))
 	emit_signal("score_changed", score)
 	emit_signal("combo_changed", combo)
+	emit_signal("item_overcharge_changed", -1, 0.0)
 	emit_signal("pause_state_changed", false)
 
 
@@ -623,19 +1073,34 @@ func _draw_game_world() -> void:
 
 	for warning in spawn_warnings:
 		_draw_spawn_warning(warning, offset)
+	for warning in item_warnings:
+		if bool(warning.active): _draw_item_warning(warning, offset)
+	for mine in mines:
+		if bool(mine.active): _draw_mine(mine, offset)
+	for turret in turrets:
+		if bool(turret.active): _draw_turret(turret, offset)
+	for pickup in pickups:
+		if bool(pickup.active): _draw_pickup(pickup, offset)
 	for d in debris:
 		if bool(d.active): _draw_debris(Vector2(d.pos) + offset, float(d.angle))
 	for g in germs:
 		if bool(g.active): _draw_germ(g, offset)
 	for p in pellets:
 		if bool(p.active):
-			draw_circle(Vector2(p.pos) + offset, 5.0, LIME)
-			draw_arc(Vector2(p.pos) + offset, 6.5, 0.0, TAU, 18, LIME_DARK, 1.5, true)
+			var pellet_color := LIME if int(p.owner) == ProjectileOwner.PLAYER else PURPLE_SOFT
+			draw_circle(Vector2(p.pos) + offset, 5.0, pellet_color)
+			draw_arc(Vector2(p.pos) + offset, 6.5, 0.0, TAU, 18, LIME_DARK if int(p.owner) == ProjectileOwner.PLAYER else PURPLE, 1.5, true)
+	_draw_aoe_effect(offset)
+	_draw_spinning_hitters(offset)
 	_draw_player(offset)
 	_draw_reticle(get_global_mouse_position())
 	for popup in popups:
-		var alpha := clampf(float(popup.life) / 0.8, 0.0, 1.0)
-		_draw_text_centered(str(popup.text), Vector2(popup.pos) + offset, 24, Color(0.466, 0.251, 0.557, alpha))
+		var duration := float(popup.get("duration", 0.8))
+		var alpha := clampf(float(popup.life) / duration, 0.0, 1.0)
+		var popup_color := PURPLE
+		if int(popup.get("item_type", -1)) >= 0:
+			popup_color = ItemData.color(int(popup.item_type))
+		_draw_text_centered(str(popup.text), Vector2(popup.pos) + offset, 24, Color(popup_color.r, popup_color.g, popup_color.b, alpha))
 	_draw_hud()
 
 
@@ -646,12 +1111,13 @@ func _draw_spawn_warning(warning: Dictionary, offset: Vector2) -> void:
 	var progress := 1.0 - clampf(float(warning.life) / float(warning.duration), 0.0, 1.0)
 	var motion := 0.0 if bool(saved.get("reduced_motion", false)) else sin(progress * TAU * 3.0)
 	var aura_radius := spec.radius + 18.0 + motion * 5.0
-	var color := CYAN if tier != GermData.GermTier.MEDIUM else PURPLE_SOFT
+	var color := ORANGE_HOT if tier == GermData.GermTier.ELITE else (CYAN if tier != GermData.GermTier.MEDIUM else PURPLE_SOFT)
+	var ring_color := ORANGE_HOT if tier == GermData.GermTier.ELITE else PURPLE
 	draw_circle(pos, aura_radius, Color(color.r, color.g, color.b, 0.09 + progress * 0.1))
 	for ring in 3:
 		var ring_radius := aura_radius + float(ring) * 9.0 - progress * 7.0
 		var ring_alpha := clampf(0.5 - float(ring) * 0.11 + progress * 0.25, 0.12, 0.75)
-		draw_arc(pos, ring_radius, 0.0, TAU, 42, Color(PURPLE.r, PURPLE.g, PURPLE.b, ring_alpha), 2.0, true)
+		draw_arc(pos, ring_radius, 0.0, TAU, 42, Color(ring_color.r, ring_color.g, ring_color.b, ring_alpha), 2.0, true)
 	var inward := (arena_center - pos).normalized()
 	var side := inward.orthogonal()
 	var tip := pos + inward * (aura_radius + 10.0)
@@ -659,19 +1125,77 @@ func _draw_spawn_warning(warning: Dictionary, offset: Vector2) -> void:
 	draw_colored_polygon(arrow, Color(LIME.r, LIME.g, LIME.b, 0.72))
 
 
+func _draw_item_warning(warning: Dictionary, offset: Vector2) -> void:
+	var item_type := int(warning.item_type)
+	var color := ItemData.color(item_type)
+	var pos := Vector2(warning.pos) + offset
+	var progress := 1.0 - clampf(float(warning.life) / float(warning.duration), 0.0, 1.0)
+	var motion := 0.0 if bool(saved.get("reduced_motion", false)) else sin(progress * TAU * 3.0) * 4.0
+	var aura_radius := 28.0 + motion
+	draw_circle(pos, aura_radius + 8.0, Color(color.r, color.g, color.b, 0.13 + progress * 0.12))
+	for ring in 3:
+		var radius := aura_radius + float(ring) * 9.0 - progress * 6.0
+		draw_arc(pos, radius, 0.0, TAU, 40, Color(color.r, color.g, color.b, 0.72 - float(ring) * 0.16), 2.5, true)
+	_draw_item_icon(item_type, pos, 16.0, color)
+
+
+func _draw_pickup(pickup: Dictionary, offset: Vector2) -> void:
+	var item_type := int(pickup.item_type)
+	var color := ItemData.color(item_type)
+	var pos := Vector2(pickup.pos) + offset
+	var motion := 0.0 if bool(saved.get("reduced_motion", false)) else sin(float(pickup.phase) * 4.0) * 3.0
+	draw_circle(pos, 28.0 + motion, Color(color.r, color.g, color.b, 0.16))
+	draw_arc(pos, 24.0 + motion, 0.0, TAU, 32, color, 2.5, true)
+	draw_circle(pos, ITEM_PICKUP_RADIUS, Color(WHITE.r, WHITE.g, WHITE.b, 0.94))
+	_draw_item_icon(item_type, pos, 14.0, color)
+	var label := "%s%s" % [ItemData.display_name(item_type), "  +" if bool(pickup.overcharge) else ""]
+	_draw_text_centered(label, pos + Vector2(0.0, -32.0), 13, DARK_MINT)
+
+
+func _draw_item_icon(item_type: int, pos: Vector2, size: float, color: Color) -> void:
+	match item_type:
+		ItemData.ItemType.SPINNING_HITTER:
+			var direction := Vector2.RIGHT.rotated(-0.55)
+			draw_line(pos - direction * size, pos + direction * size, color, 5.0, true)
+			draw_circle(pos - direction * size, 3.5, color)
+			draw_circle(pos + direction * size, 3.5, color)
+		ItemData.ItemType.AOE:
+			draw_arc(pos, size * 0.45, 0.0, TAU, 20, color, 2.5, true)
+			draw_arc(pos, size * 0.85, 0.0, TAU, 24, color, 2.0, true)
+		ItemData.ItemType.TURRET:
+			draw_circle(pos, size * 0.52, color)
+			draw_line(pos, pos + Vector2.RIGHT.rotated(-0.35) * size, WHITE, 4.0, true)
+		ItemData.ItemType.RICOCHET:
+			var points := PackedVector2Array([pos + Vector2(-size, size * 0.6), pos + Vector2(-size * 0.25, -size * 0.6), pos + Vector2(size * 0.2, size * 0.3), pos + Vector2(size, -size * 0.65)])
+			draw_polyline(points, color, 3.5, true)
+		ItemData.ItemType.SPREAD:
+			for angle in [-0.5, 0.0, 0.5]:
+				draw_line(pos - Vector2.RIGHT.rotated(float(angle)) * 3.0, pos + Vector2.RIGHT.rotated(float(angle)) * size, color, 3.0, true)
+		ItemData.ItemType.LEAVE_BEHIND:
+			var diamond := PackedVector2Array([pos + Vector2(0, -size), pos + Vector2(size, 0), pos + Vector2(0, size), pos + Vector2(-size, 0), pos + Vector2(0, -size)])
+			draw_polyline(diamond, color, 3.0, true)
+			draw_circle(pos, 4.0, color)
+
+
 func _draw_germ(g: Dictionary, offset: Vector2) -> void:
 	var pos := Vector2(g.pos) + offset
-	var spec := germ_specs[int(g.tier)]
+	var tier := int(g.tier)
+	var spec := germ_specs[tier]
 	var radius := spec.radius
-	var fill := CYAN if int(g.tier) != GermData.GermTier.MEDIUM else PURPLE_SOFT
-	for i in 10:
-		var a := TAU * float(i) / 10.0 + float(g.phase) * 0.18
+	var is_elite := tier == GermData.GermTier.ELITE
+	var fill := ORANGE if is_elite else (CYAN if tier != GermData.GermTier.MEDIUM else PURPLE_SOFT)
+	var outline := ORANGE_HOT if is_elite else PURPLE
+	var spike_count := 14 if is_elite else 10
+	for i in spike_count:
+		var a := TAU * float(i) / float(spike_count) + float(g.phase) * 0.18
 		var inner := pos + Vector2.RIGHT.rotated(a) * (radius * 0.78)
-		var outer := pos + Vector2.RIGHT.rotated(a) * (radius + 5.0 + sin(a * 3.0) * 3.0)
-		draw_line(inner, outer, PURPLE, maxf(1.5, radius * 0.07), true)
+		var outer := pos + Vector2.RIGHT.rotated(a) * (radius + (9.0 if is_elite else 5.0) + sin(a * 3.0) * 3.0)
+		draw_line(inner, outer, outline, maxf(1.5, radius * 0.07), true)
 	draw_circle(pos, radius, Color(fill.r, fill.g, fill.b, 0.78))
-	draw_arc(pos, radius, 0.0, TAU, 48, PURPLE, maxf(2.0, radius * 0.08), true)
-	draw_circle(pos + Vector2(-radius * 0.24, -radius * 0.12), radius * 0.12, PURPLE)
+	draw_arc(pos, radius, 0.0, TAU, 48, outline, maxf(2.0, radius * 0.08), true)
+	if is_elite:
+		draw_arc(pos, radius * 0.68, 0.0, TAU, 40, WHITE, 3.0, true)
+	draw_circle(pos + Vector2(-radius * 0.24, -radius * 0.12), radius * 0.12, outline)
 	draw_circle(pos + Vector2(radius * 0.18, radius * 0.22), radius * 0.08, DARK_MINT)
 	if int(g.hp) < spec.hp:
 		draw_arc(pos, radius + 4.0, -PI * 0.5, -PI * 0.5 + TAU * float(g.hp) / float(spec.hp), 24, ORANGE_HOT, 3.0, true)
@@ -686,6 +1210,62 @@ func _draw_debris(pos: Vector2, angle: float) -> void:
 	])
 	draw_colored_polygon(pts, PURPLE_SOFT)
 	draw_polyline(PackedVector2Array([pts[0], pts[1], pts[2], pts[3], pts[0]]), PURPLE, 2.0, true)
+
+
+func _draw_mine(mine: Dictionary, offset: Vector2) -> void:
+	var pos := Vector2(mine.pos) + offset
+	var armed := float(mine.arm) <= 0.0
+	var color := ORANGE_HOT if armed else ORANGE
+	var pulse := 0.0 if bool(saved.get("reduced_motion", false)) else sin(float(mine.phase) * 6.0) * 2.0
+	var size := 9.0 + pulse
+	var diamond := PackedVector2Array([pos + Vector2(0, -size), pos + Vector2(size, 0), pos + Vector2(0, size), pos + Vector2(-size, 0), pos + Vector2(0, -size)])
+	draw_colored_polygon(PackedVector2Array([diamond[0], diamond[1], diamond[2], diamond[3]]), Color(color.r, color.g, color.b, 0.55))
+	draw_polyline(diamond, PURPLE, 2.0, true)
+	if armed:
+		draw_circle(pos, 3.0, LIME)
+
+
+func _draw_turret(turret: Dictionary, offset: Vector2) -> void:
+	var pos := Vector2(turret.pos) + offset
+	var direction := Vector2.RIGHT.rotated(float(turret.angle))
+	var overcharged := overcharge_item == ItemData.ItemType.TURRET and overcharge_left > 0.0
+	var color := ORANGE_HOT if overcharged else PURPLE
+	draw_circle(pos, 13.0, Color(PURPLE_SOFT.r, PURPLE_SOFT.g, PURPLE_SOFT.b, 0.88))
+	draw_arc(pos, 13.0, 0.0, TAU, 24, color, 2.5, true)
+	draw_line(pos, pos + direction * 20.0, color, 6.0, true)
+	draw_circle(pos, 4.0, WHITE)
+
+
+func _draw_aoe_effect(offset: Vector2) -> void:
+	var level := _effective_item_level(ItemData.ItemType.AOE)
+	if level <= 0:
+		return
+	var pos := player_pos + offset
+	var radius := ItemData.aoe_radius(level)
+	if aoe_warning_active:
+		var progress := clampf(1.0 - aoe_timer / AOE_WARNING_SECONDS, 0.0, 1.0)
+		var warning_radius := radius if bool(saved.get("reduced_motion", false)) else lerpf(radius * 0.35, radius, progress)
+		draw_arc(pos, warning_radius, 0.0, TAU, 72, Color(CYAN.r, CYAN.g, CYAN.b, 0.36 + progress * 0.34), 3.0, true)
+	if aoe_flash_left > 0.0:
+		var alpha := clampf(aoe_flash_left / 0.22, 0.0, 1.0)
+		draw_circle(pos, radius, Color(CYAN.r, CYAN.g, CYAN.b, alpha * 0.12))
+		draw_arc(pos, radius, 0.0, TAU, 72, Color(CYAN.r, CYAN.g, CYAN.b, alpha * 0.8), 4.0, true)
+
+
+func _draw_spinning_hitters(offset: Vector2) -> void:
+	var level := _effective_item_level(ItemData.ItemType.SPINNING_HITTER)
+	var count := ItemData.hitter_count(level)
+	if count <= 0:
+		return
+	var color := ORANGE_HOT if level >= ItemData.OVERCHARGE_LEVEL else ORANGE
+	for hitter in count:
+		var angle := hitter_angle + TAU * float(hitter) / float(count)
+		var pos := player_pos + offset + Vector2.RIGHT.rotated(angle) * HITTER_ORBIT_RADIUS
+		var direction := Vector2.RIGHT.rotated(angle + PI * 0.5)
+		draw_line(pos - direction * 11.0, pos + direction * 11.0, PURPLE, 9.0, true)
+		draw_line(pos - direction * 10.0, pos + direction * 10.0, color, 5.0, true)
+		draw_circle(pos - direction * 10.0, 3.0, LIME)
+		draw_circle(pos + direction * 10.0, 3.0, LIME)
 
 
 func _draw_player(offset: Vector2) -> void:
@@ -831,12 +1411,14 @@ func _draw_how_to() -> void:
 		["LEFT CLICK", "Fire pellets — up to six per second."],
 		["SPACE", "Hold to boost. The charge drains, pauses, then recharges."],
 		["ESC", "Pause. Losing browser focus pauses automatically."],
+		["GOLD ELITE", "Destroy the tank germ to reveal a permanent item."],
+		["ITEM AURA", "Touch the item before it fades. Duplicates level it up."],
 	]
 	for i in rows.size():
-		var y := panel.position.y + 66.0 + i * 66.0
-		_draw_text(str(rows[i][0]), Vector2(panel.position.x + 42.0, y), 22, PURPLE)
-		_draw_text(str(rows[i][1]), Vector2(panel.position.x + 230.0, y), 17, DARK_MINT)
-	_draw_text_centered("Any germ or debris contact ends the run after 1.5 seconds of spawn protection.", Vector2(viewport_size.x * 0.5, panel.end.y - 36.0), 16, ORANGE_HOT)
+		var y := panel.position.y + 56.0 + i * 47.0
+		_draw_text(str(rows[i][0]), Vector2(panel.position.x + 42.0, y), 19, PURPLE)
+		_draw_text(str(rows[i][1]), Vector2(panel.position.x + 230.0, y), 15, DARK_MINT)
+	_draw_text_centered("All item attacks damage germs and debris. Any hostile contact still ends the run.", Vector2(viewport_size.x * 0.5, panel.end.y - 30.0), 15, ORANGE_HOT)
 	_draw_action_button(_single_button_rect(), "BACK", false)
 
 

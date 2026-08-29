@@ -13,7 +13,7 @@ var _streams := {}
 
 
 func _ready() -> void:
-	for i in 8:
+	for i in 12:
 		var player := AudioStreamPlayer.new()
 		add_child(player)
 		_players.append(player)
@@ -26,6 +26,12 @@ func _ready() -> void:
 		"impact": _tone(82.0, 0.16, 0.55, "noise", 0.0),
 		"ui": _tone(440.0, 0.07, 0.35, "sine", 120.0),
 		"game_over": _tone(210.0, 0.72, 0.5, "triangle", -150.0),
+		"elite_spawn": _tone(96.0, 0.34, 0.42, "saw", 120.0),
+		"item_appear": _tone(520.0, 0.18, 0.38, "triangle", 360.0),
+		"item_pickup": _tone(710.0, 0.22, 0.42, "sine", 520.0),
+		"aoe": _tone(130.0, 0.2, 0.42, "sine", 430.0),
+		"turret": _tone(880.0, 0.045, 0.28, "square", -180.0),
+		"mine": _tone(105.0, 0.18, 0.48, "noise", 0.0),
 	}
 	_ambient.stream = _ambient_hum()
 	apply_levels(_sfx_volume, _music_volume)

@@ -4,8 +4,11 @@ extends RefCounted
 const BOOST_DRAIN_SECONDS := 2.0
 const BOOST_RECHARGE_DELAY := 0.5
 const BOOST_RECHARGE_SECONDS := 3.0
-const MAX_GERMS := 35
+const MAX_REGULAR_GERMS := 35
+const MAX_GERMS := 36
 const MAX_FRAGMENTS := 80
+const ELITE_FIRST_SPAWN := 20.0
+const ELITE_SPAWN_INTERVAL := 30.0
 
 static func update_boost(charge: float, delay_left: float, boosting: bool, delta: float) -> Dictionary:
 	var next_charge := charge
@@ -32,7 +35,7 @@ static func awarded_score(base_score: int, combo: int) -> int:
 
 
 static func active_germ_cap(run_seconds: float) -> int:
-	return mini(MAX_GERMS, 5 + int(floor(run_seconds / 20.0)))
+	return mini(MAX_REGULAR_GERMS, 5 + int(floor(run_seconds / 20.0)))
 
 
 static func spawn_interval(run_seconds: float) -> float:
@@ -51,6 +54,8 @@ static func split_result(tier: int) -> Dictionary:
 			return {"child_tier": GermData.GermTier.SMALL, "children": 2, "fragments": 2}
 		GermData.GermTier.SMALL:
 			return {"child_tier": -1, "children": 0, "fragments": 1}
+		GermData.GermTier.ELITE:
+			return {"child_tier": -1, "children": 0, "fragments": 4}
 	return {"child_tier": -1, "children": 0, "fragments": 0}
 
 
