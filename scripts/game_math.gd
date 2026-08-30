@@ -7,8 +7,8 @@ const BOOST_RECHARGE_SECONDS := 3.0
 const MAX_REGULAR_GERMS := 35
 const MAX_GERMS := 36
 const MAX_FRAGMENTS := 80
-const ELITE_FIRST_SPAWN := 20.0
-const ELITE_SPAWN_INTERVAL := 30.0
+const ELITE_FIRST_SPAWN := 10.0
+const ELITE_SPAWN_INTERVAL := 10.0
 
 static func update_boost(charge: float, delay_left: float, boosting: bool, delta: float) -> Dictionary:
 	var next_charge := charge

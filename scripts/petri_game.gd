@@ -13,6 +13,7 @@ signal item_overcharge_changed(item_type: int, seconds_left: float)
 enum AppState { MENU, HOW_TO, PLAYING, PAUSED, SETTINGS, GAME_OVER }
 enum ProjectileOwner { PLAYER, TURRET }
 enum DialogueSpeaker { NONE, GERM, PLAYER }
+enum DialogueCutscenePhase { NONE, ZOOM_IN, TALKING, ZOOM_OUT }
 
 const BG := Color("#D7FFF8")
 const MINT := Color("#B2DBD5")
@@ -60,12 +61,20 @@ const TURRET_BULLET_LIFETIME := 1.5
 const MINE_ARM_SECONDS := 0.25
 const MINE_LIFETIME := 8.0
 const MINE_TRIGGER_RADIUS := 30.0
-const GERM_DIALOGUE_DURATION := 2.2
-const PLAYER_DIALOGUE_DURATION := 3.2
-const DIALOGUE_COOLDOWN_SECONDS := 4.0
+const DIALOGUE_BASE_WORD_COUNT := 4
+const DIALOGUE_BASE_DURATION_SECONDS := 2.2
+const DIALOGUE_EXTRA_WORD_SECONDS := 0.25
+const DIALOGUE_START_INTERVAL_SECONDS := 24.0
 const PLAYER_DIALOGUE_MIN_INTERVAL := 24.0
 const PLAYER_DIALOGUE_MAX_INTERVAL := 34.0
 const DIALOGUE_MAX_TEXT_WIDTH := 280.0
+const DIALOGUE_ZOOM_IN_SECONDS := 0.3
+const DIALOGUE_ZOOM_OUT_SECONDS := 0.35
+const DIALOGUE_CAMERA_SCALE := 1.58
+const DIALOGUE_TYPE_HOLD_SECONDS := 0.2
+const DIALOGUE_SPEAKER_PULSE_AMOUNT := 0.055
+const DIALOGUE_SPEAKER_PULSE_SPEED := 7.5
+const DIALOGUE_CINEMATIC_HUD_OPACITY := 0.08
 const HUD_SCALE := 0.72
 const HUD_OCCLUDED_OPACITY := 0.15
 const WORLD_TEXT_OCCLUDED_OPACITY := 0.28
@@ -136,6 +145,12 @@ var dialogue_germ_index := -1
 var dialogue_text := ""
 var dialogue_life := 0.0
 var dialogue_cooldown := 0.0
+var dialogue_cutscene_phase := DialogueCutscenePhase.NONE
+var dialogue_phase_time := 0.0
+var dialogue_talk_duration := 0.0
+var dialogue_type_characters_per_second := 40.0
+var dialogue_visible_characters := 0
+var dialogue_focus_position := Vector2.ZERO
 var next_player_dialogue_time := INF
 var pending_dialogue_germ_indices: Array[int] = [-1, -1]
 var logo_hud_opacity := 1.0
@@ -180,7 +195,8 @@ func _process(delta: float) -> void:
 	_update_layout()
 	if state == AppState.PLAYING:
 		_update_run(delta)
-	_update_popups(delta)
+	if not _dialogue_cutscene_active():
+		_update_popups(delta)
 	_update_overlay_opacities(delta)
 	screen_shake = maxf(0.0, screen_shake - delta * 2.6)
 	queue_redraw()
@@ -203,8 +219,13 @@ func _update_layout() -> void:
 
 
 func _update_run(delta: float) -> void:
+	if _dialogue_cutscene_active():
+		_update_dialogue(delta)
+		return
 	run_time += delta
 	_update_dialogue(delta)
+	if _dialogue_cutscene_active():
+		return
 	spawn_protection_left = maxf(0.0, spawn_protection_left - delta)
 	fire_cooldown = maxf(0.0, fire_cooldown - delta)
 	_update_overcharge(delta)
@@ -639,7 +660,7 @@ func _spawn_germ(tier: int, position_override: Variant = null, topic_override: i
 			if tier != GermData.GermTier.LARGE:
 				stance = stance_override if stance_override >= 0 else rng.randi_range(CULTURE_WAR_DIALOGUE.STANCE_A, CULTURE_WAR_DIALOGUE.STANCE_B)
 		germs[i] = {"active": true, "tier": tier, "pos": at, "vel": direction * speed, "hp": spec.hp, "phase": rng.randf_range(0.0, TAU), "hitter_cooldown": 0.0, "topic_id": topic_id, "stance": stance}
-		_try_show_germ_dialogue(i, dialogue_priority or tier == GermData.GermTier.LARGE)
+		_try_show_germ_dialogue(i, dialogue_priority or tier == GermData.GermTier.LARGE or tier == GermData.GermTier.ELITE)
 		return true
 	return false
 
@@ -924,27 +945,31 @@ func _update_overlay_opacities(delta: float) -> void:
 	boost_hud_opacity = move_toward(boost_hud_opacity, _overlay_target_opacity(_boost_bounds()), delta * OPACITY_TRANSITION_SPEED)
 	var dialogue_target := 1.0
 	if dialogue_speaker != DialogueSpeaker.NONE and not dialogue_text.is_empty():
-		var speaker_pos := player_pos
+		var speaker_pos := _dialogue_world_to_screen(player_pos)
 		var speaker_radius := PLAYER_RADIUS
 		var ignored_germ := -1
 		var ignore_player := dialogue_speaker == DialogueSpeaker.PLAYER
 		if dialogue_speaker == DialogueSpeaker.GERM and dialogue_germ_index >= 0 and dialogue_germ_index < germs.size() and bool(germs[dialogue_germ_index].active):
-			speaker_pos = Vector2(germs[dialogue_germ_index].pos)
+			speaker_pos = _dialogue_world_to_screen(Vector2(germs[dialogue_germ_index].pos))
 			speaker_radius = germ_specs[int(germs[dialogue_germ_index].tier)].radius
 			ignored_germ = dialogue_germ_index
+		speaker_radius *= _dialogue_camera_zoom() * _dialogue_speaker_scale(ignored_germ)
 		var layout := _dialogue_layout(speaker_pos, dialogue_text, speaker_radius)
 		dialogue_target = _overlay_target_opacity(Rect2(layout.rect), ignored_germ, ignore_player, WORLD_TEXT_OCCLUDED_OPACITY)
 	dialogue_occlusion_opacity = move_toward(dialogue_occlusion_opacity, dialogue_target, delta * OPACITY_TRANSITION_SPEED)
 
 
 func _overlay_target_opacity(rect: Rect2, ignored_germ_index: int = -1, ignore_player: bool = false, occluded_opacity: float = HUD_OCCLUDED_OPACITY) -> float:
-	if not ignore_player and _circle_intersects_rect(player_pos, PLAYER_RADIUS, rect):
+	var zoom := _dialogue_camera_zoom()
+	var player_screen_pos := _dialogue_world_to_screen(player_pos)
+	if not ignore_player and _circle_intersects_rect(player_screen_pos, PLAYER_RADIUS * zoom * _dialogue_speaker_scale(), rect):
 		return occluded_opacity
 	for i in germs.size():
 		if i == ignored_germ_index or not bool(germs[i].active):
 			continue
-		var radius := germ_specs[int(germs[i].tier)].radius
-		if _circle_intersects_rect(Vector2(germs[i].pos), radius, rect):
+		var radius := germ_specs[int(germs[i].tier)].radius * zoom * _dialogue_speaker_scale(i)
+		var germ_screen_pos := _dialogue_world_to_screen(Vector2(germs[i].pos))
+		if _circle_intersects_rect(germ_screen_pos, radius, rect):
 			return occluded_opacity
 	return 1.0
 
@@ -965,14 +990,136 @@ func _update_dialogue(delta: float) -> void:
 	if dialogue_speaker == DialogueSpeaker.GERM:
 		if dialogue_germ_index < 0 or dialogue_germ_index >= germs.size() or not bool(germs[dialogue_germ_index].active):
 			_clear_dialogue_bubble()
-	if dialogue_speaker != DialogueSpeaker.NONE:
-		dialogue_life = maxf(0.0, dialogue_life - delta)
-		if dialogue_life <= 0.0:
-			_clear_dialogue_bubble()
+	if _dialogue_cutscene_active():
+		_update_dialogue_cutscene(delta)
+		if _dialogue_cutscene_active():
+			return
+	if dialogue_cooldown > 0.0:
+		return
 	if run_time >= next_player_dialogue_time:
 		_show_player_dialogue()
-	elif dialogue_speaker == DialogueSpeaker.NONE and dialogue_cooldown <= 0.0:
+	elif dialogue_speaker == DialogueSpeaker.NONE:
 		_show_next_pending_dialogue()
+
+
+func _update_dialogue_cutscene(delta: float) -> void:
+	dialogue_life = maxf(0.0, dialogue_life - delta)
+	var remaining := maxf(0.0, delta)
+	while remaining > 0.0 and _dialogue_cutscene_active():
+		var phase_duration := _dialogue_phase_duration()
+		var phase_remaining := maxf(0.0, phase_duration - dialogue_phase_time)
+		var step := minf(remaining, phase_remaining)
+		dialogue_phase_time += step
+		remaining -= step
+		if dialogue_cutscene_phase == DialogueCutscenePhase.TALKING and not bool(saved.get("reduced_motion", false)):
+			dialogue_visible_characters = mini(
+				dialogue_text.length(),
+				floori(dialogue_phase_time * dialogue_type_characters_per_second)
+			)
+		if dialogue_phase_time + 0.0001 < phase_duration:
+			break
+		match dialogue_cutscene_phase:
+			DialogueCutscenePhase.ZOOM_IN:
+				dialogue_cutscene_phase = DialogueCutscenePhase.TALKING
+				dialogue_phase_time = 0.0
+			DialogueCutscenePhase.TALKING:
+				dialogue_visible_characters = dialogue_text.length()
+				dialogue_cutscene_phase = DialogueCutscenePhase.ZOOM_OUT
+				dialogue_phase_time = 0.0
+			DialogueCutscenePhase.ZOOM_OUT:
+				_clear_dialogue_bubble()
+			_:
+				return
+		if is_zero_approx(step) and phase_duration > 0.0:
+			break
+
+
+func _dialogue_phase_duration() -> float:
+	match dialogue_cutscene_phase:
+		DialogueCutscenePhase.ZOOM_IN:
+			return DIALOGUE_ZOOM_IN_SECONDS
+		DialogueCutscenePhase.TALKING:
+			return dialogue_talk_duration
+		DialogueCutscenePhase.ZOOM_OUT:
+			return DIALOGUE_ZOOM_OUT_SECONDS
+	return 0.0
+
+
+func _dialogue_cutscene_active() -> bool:
+	return dialogue_speaker != DialogueSpeaker.NONE and dialogue_cutscene_phase != DialogueCutscenePhase.NONE
+
+
+func _dialogue_phase_progress() -> float:
+	return clampf(dialogue_phase_time / maxf(_dialogue_phase_duration(), 0.0001), 0.0, 1.0)
+
+
+func _dialogue_ease(value: float) -> float:
+	var clamped := clampf(value, 0.0, 1.0)
+	return clamped * clamped * (3.0 - 2.0 * clamped)
+
+
+func _dialogue_cinematic_amount() -> float:
+	if not _dialogue_cutscene_active():
+		return 0.0
+	match dialogue_cutscene_phase:
+		DialogueCutscenePhase.ZOOM_IN:
+			return _dialogue_ease(_dialogue_phase_progress())
+		DialogueCutscenePhase.TALKING:
+			return 1.0
+		DialogueCutscenePhase.ZOOM_OUT:
+			return 1.0 - _dialogue_ease(_dialogue_phase_progress())
+	return 0.0
+
+
+func _dialogue_camera_zoom() -> float:
+	if bool(saved.get("reduced_motion", false)):
+		return 1.0
+	return lerpf(1.0, DIALOGUE_CAMERA_SCALE, _dialogue_cinematic_amount())
+
+
+func _dialogue_camera_target() -> Vector2:
+	return Vector2(viewport_size.x * 0.5, viewport_size.y * 0.56)
+
+
+func _dialogue_camera_origin(offset: Vector2 = Vector2.ZERO) -> Vector2:
+	if not _dialogue_cutscene_active():
+		return Vector2.ZERO
+	var zoom := _dialogue_camera_zoom()
+	return _dialogue_camera_target() - (dialogue_focus_position + offset) * zoom
+
+
+func _dialogue_world_to_screen(world_position: Vector2, offset: Vector2 = Vector2.ZERO) -> Vector2:
+	if not _dialogue_cutscene_active():
+		return world_position + offset
+	return _dialogue_camera_origin(offset) + (world_position + offset) * _dialogue_camera_zoom()
+
+
+func _dialogue_speaker_scale(germ_index: int = -1) -> float:
+	if not _dialogue_cutscene_active() or bool(saved.get("reduced_motion", false)):
+		return 1.0
+	var is_speaker := dialogue_speaker == DialogueSpeaker.PLAYER and germ_index < 0
+	if dialogue_speaker == DialogueSpeaker.GERM:
+		is_speaker = germ_index == dialogue_germ_index
+	if not is_speaker:
+		return 1.0
+	var elapsed := dialogue_phase_time
+	if dialogue_cutscene_phase == DialogueCutscenePhase.TALKING:
+		elapsed += DIALOGUE_ZOOM_IN_SECONDS
+	elif dialogue_cutscene_phase == DialogueCutscenePhase.ZOOM_OUT:
+		elapsed += DIALOGUE_ZOOM_IN_SECONDS + dialogue_talk_duration
+	var pulse := 0.5 + 0.5 * sin(elapsed * DIALOGUE_SPEAKER_PULSE_SPEED)
+	return 1.0 - DIALOGUE_SPEAKER_PULSE_AMOUNT * pulse * _dialogue_cinematic_amount()
+
+
+func _dialogue_bubble_alpha() -> float:
+	if not _dialogue_cutscene_active():
+		return 0.0
+	match dialogue_cutscene_phase:
+		DialogueCutscenePhase.ZOOM_IN:
+			return _dialogue_ease(clampf((_dialogue_phase_progress() - 0.35) / 0.65, 0.0, 1.0))
+		DialogueCutscenePhase.ZOOM_OUT:
+			return 1.0 - _dialogue_ease(_dialogue_phase_progress())
+	return 1.0
 
 
 func _try_show_germ_dialogue(index: int, queue_if_blocked: bool = false) -> bool:
@@ -980,13 +1127,7 @@ func _try_show_germ_dialogue(index: int, queue_if_blocked: bool = false) -> bool
 		return false
 	var tier := int(germs[index].tier)
 	var is_elite := tier == GermData.GermTier.ELITE
-	if dialogue_speaker == DialogueSpeaker.PLAYER:
-		if queue_if_blocked and not is_elite:
-			_queue_pending_dialogue(index)
-		return false
-	if is_elite:
-		_clear_dialogue_bubble()
-	elif dialogue_speaker != DialogueSpeaker.NONE or dialogue_cooldown > 0.0:
+	if dialogue_speaker != DialogueSpeaker.NONE or dialogue_cooldown > 0.0:
 		if queue_if_blocked:
 			_queue_pending_dialogue(index)
 		return false
@@ -1000,12 +1141,18 @@ func _try_show_germ_dialogue(index: int, queue_if_blocked: bool = false) -> bool
 			_dialogue_intensity(tier),
 			rng.randi()
 		)
-	_show_dialogue(DialogueSpeaker.GERM, index, line, GERM_DIALOGUE_DURATION)
+	_show_dialogue(DialogueSpeaker.GERM, index, line)
 	return true
 
 
 func _queue_pending_dialogue(index: int) -> void:
 	if index in pending_dialogue_germ_indices:
+		return
+	if index >= 0 and index < germs.size() and bool(germs[index].active) and int(germs[index].tier) == GermData.GermTier.ELITE:
+		var previous_first := pending_dialogue_germ_indices[0]
+		pending_dialogue_germ_indices[0] = index
+		if previous_first >= 0:
+			pending_dialogue_germ_indices[1] = previous_first
 		return
 	for i in pending_dialogue_germ_indices.size():
 		if pending_dialogue_germ_indices[i] < 0:
@@ -1031,18 +1178,34 @@ func _show_player_dialogue() -> void:
 	_show_dialogue(
 		DialogueSpeaker.PLAYER,
 		-1,
-		CULTURE_WAR_DIALOGUE.player_line(rng.randi()),
-		PLAYER_DIALOGUE_DURATION
+		CULTURE_WAR_DIALOGUE.player_line(rng.randi())
 	)
 	next_player_dialogue_time = run_time + rng.randf_range(PLAYER_DIALOGUE_MIN_INTERVAL, PLAYER_DIALOGUE_MAX_INTERVAL)
 
 
-func _show_dialogue(speaker: int, germ_index: int, text: String, duration: float) -> void:
+func _dialogue_duration_for_text(text: String) -> float:
+	var word_count := maxi(1, text.split(" ", false).size())
+	var extra_words := maxi(0, word_count - DIALOGUE_BASE_WORD_COUNT)
+	return DIALOGUE_BASE_DURATION_SECONDS + float(extra_words) * DIALOGUE_EXTRA_WORD_SECONDS
+
+
+func _show_dialogue(speaker: int, germ_index: int, text: String) -> void:
 	dialogue_speaker = speaker
 	dialogue_germ_index = germ_index
 	dialogue_text = text
-	dialogue_life = duration
-	dialogue_cooldown = duration + DIALOGUE_COOLDOWN_SECONDS
+	dialogue_cutscene_phase = DialogueCutscenePhase.ZOOM_IN
+	dialogue_phase_time = 0.0
+	var duration := _dialogue_duration_for_text(text)
+	var available_talk_time := maxf(0.1, duration - DIALOGUE_ZOOM_IN_SECONDS - DIALOGUE_ZOOM_OUT_SECONDS)
+	dialogue_talk_duration = available_talk_time
+	var type_time := maxf(0.1, dialogue_talk_duration - DIALOGUE_TYPE_HOLD_SECONDS)
+	dialogue_type_characters_per_second = float(text.length()) / type_time
+	dialogue_life = DIALOGUE_ZOOM_IN_SECONDS + dialogue_talk_duration + DIALOGUE_ZOOM_OUT_SECONDS
+	dialogue_cooldown = DIALOGUE_START_INTERVAL_SECONDS
+	dialogue_visible_characters = text.length() if bool(saved.get("reduced_motion", false)) else 0
+	dialogue_focus_position = player_pos
+	if speaker == DialogueSpeaker.GERM and germ_index >= 0 and germ_index < germs.size() and bool(germs[germ_index].active):
+		dialogue_focus_position = Vector2(germs[germ_index].pos)
 
 
 func _clear_dialogue_bubble() -> void:
@@ -1050,6 +1213,12 @@ func _clear_dialogue_bubble() -> void:
 	dialogue_germ_index = -1
 	dialogue_text = ""
 	dialogue_life = 0.0
+	dialogue_cutscene_phase = DialogueCutscenePhase.NONE
+	dialogue_phase_time = 0.0
+	dialogue_talk_duration = 0.0
+	dialogue_type_characters_per_second = 40.0
+	dialogue_visible_characters = 0
+	dialogue_focus_position = Vector2.ZERO
 	dialogue_occlusion_opacity = 1.0
 
 
@@ -1269,9 +1438,11 @@ func _visual_offset() -> Vector2:
 
 
 func _draw_game_world() -> void:
-	var offset := _visual_offset()
-	var center := arena_center + offset
 	draw_rect(Rect2(Vector2.ZERO, viewport_size), GAME_BG)
+	var offset := Vector2.ZERO if _dialogue_cutscene_active() else _visual_offset()
+	var camera_zoom := _dialogue_camera_zoom()
+	draw_set_transform(_dialogue_camera_origin(offset), 0.0, Vector2.ONE * camera_zoom)
+	var center := arena_center + offset
 	var visual_unit := _hud_unit()
 	var rail_top := maxf(viewport_size.x * 0.08, arena_center.x - arena_radius - visual_unit * 0.11)
 	var rail_slope := minf(visual_unit * 0.36, viewport_size.x * 0.24)
@@ -1298,8 +1469,8 @@ func _draw_game_world() -> void:
 		if bool(pickup.active): _draw_pickup(pickup, offset)
 	for d in debris:
 		if bool(d.active): _draw_debris(Vector2(d.pos) + offset, float(d.angle))
-	for g in germs:
-		if bool(g.active): _draw_germ(g, offset)
+	for i in germs.size():
+		if bool(germs[i].active): _draw_germ(germs[i], offset, _dialogue_speaker_scale(i))
 	for p in pellets:
 		if bool(p.active):
 			var pellet_color := LIME if int(p.owner) == ProjectileOwner.PLAYER else PURPLE_SOFT
@@ -1307,8 +1478,9 @@ func _draw_game_world() -> void:
 			draw_arc(Vector2(p.pos) + offset, 6.5, 0.0, TAU, 18, LIME_DARK if int(p.owner) == ProjectileOwner.PLAYER else PURPLE, 1.5, true)
 	_draw_aoe_effect(offset)
 	_draw_spinning_hitters(offset)
-	_draw_player(offset)
-	_draw_reticle(get_global_mouse_position())
+	_draw_player(offset, _dialogue_speaker_scale())
+	if not _dialogue_cutscene_active():
+		_draw_reticle(get_global_mouse_position())
 	for popup in popups:
 		var duration := float(popup.get("duration", 0.8))
 		var alpha := clampf(float(popup.life) / duration, 0.0, 1.0) * float(popup.get("occlusion_opacity", 1.0))
@@ -1316,8 +1488,22 @@ func _draw_game_world() -> void:
 		if int(popup.get("item_type", -1)) >= 0:
 			popup_color = ItemData.color(int(popup.item_type))
 		_draw_text_centered(str(popup.text), Vector2(popup.pos) + offset, 18, Color(popup_color.r, popup_color.g, popup_color.b, alpha))
+	draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
+	var cinematic_hud_opacity := lerpf(1.0, DIALOGUE_CINEMATIC_HUD_OPACITY, _dialogue_cinematic_amount())
+	_draw_hud(cinematic_hud_opacity)
+	_draw_dialogue_cinematic_frame()
 	_draw_dialogue_bubble(offset)
-	_draw_hud()
+
+
+func _draw_dialogue_cinematic_frame() -> void:
+	var amount := _dialogue_cinematic_amount()
+	if amount <= 0.0:
+		return
+	draw_rect(Rect2(Vector2.ZERO, viewport_size), Color(PURPLE.r, PURPLE.g, PURPLE.b, 0.055 * amount))
+	var bar_height := clampf(viewport_size.y * 0.045, 22.0, 54.0) * amount
+	var bar_color := Color(DARK_MINT.r, DARK_MINT.g, DARK_MINT.b, 0.82 * amount)
+	draw_rect(Rect2(Vector2.ZERO, Vector2(viewport_size.x, bar_height)), bar_color)
+	draw_rect(Rect2(Vector2(0.0, viewport_size.y - bar_height), Vector2(viewport_size.x, bar_height)), bar_color)
 
 
 func _draw_spawn_warning(warning: Dictionary, offset: Vector2) -> void:
@@ -1393,11 +1579,11 @@ func _draw_item_icon(item_type: int, pos: Vector2, size: float, color: Color) ->
 			draw_circle(pos, 4.0, color)
 
 
-func _draw_germ(g: Dictionary, offset: Vector2) -> void:
+func _draw_germ(g: Dictionary, offset: Vector2, actor_scale: float = 1.0) -> void:
 	var pos := Vector2(g.pos) + offset
 	var tier := int(g.tier)
 	var spec := germ_specs[tier]
-	var radius := spec.radius
+	var radius := spec.radius * actor_scale
 	var is_elite := tier == GermData.GermTier.ELITE
 	var fill := ORANGE if is_elite else (CYAN if tier != GermData.GermTier.MEDIUM else PURPLE_SOFT)
 	var outline := ORANGE_HOT if is_elite else PURPLE
@@ -1405,7 +1591,8 @@ func _draw_germ(g: Dictionary, offset: Vector2) -> void:
 	for i in spike_count:
 		var a := TAU * float(i) / float(spike_count) + float(g.phase) * 0.18
 		var inner := pos + Vector2.RIGHT.rotated(a) * (radius * 0.78)
-		var outer := pos + Vector2.RIGHT.rotated(a) * (radius + (9.0 if is_elite else 5.0) + sin(a * 3.0) * 3.0)
+		var spike_extension := ((9.0 if is_elite else 5.0) + sin(a * 3.0) * 3.0) * actor_scale
+		var outer := pos + Vector2.RIGHT.rotated(a) * (radius + spike_extension)
 		draw_line(inner, outer, outline, maxf(1.5, radius * 0.07), true)
 	draw_circle(pos, radius, Color(fill.r, fill.g, fill.b, 0.78))
 	draw_arc(pos, radius, 0.0, TAU, 48, outline, maxf(2.0, radius * 0.08), true)
@@ -1484,41 +1671,44 @@ func _draw_spinning_hitters(offset: Vector2) -> void:
 		draw_circle(pos + direction * 10.0, 3.0, LIME)
 
 
-func _draw_player(offset: Vector2) -> void:
+func _draw_player(offset: Vector2, actor_scale: float = 1.0) -> void:
 	var pos := player_pos + offset
 	if boost_active:
 		var tail_dir := Vector2.LEFT.rotated(player_facing)
-		draw_line(pos + tail_dir * 12.0, pos + tail_dir * 44.0, Color(LIME.r, LIME.g, LIME.b, 0.7), 8.0, true)
+		draw_line(pos + tail_dir * 12.0 * actor_scale, pos + tail_dir * 44.0 * actor_scale, Color(LIME.r, LIME.g, LIME.b, 0.7), 8.0 * actor_scale, true)
 	if spawn_protection_left > 0.0:
-		draw_arc(pos, PLAYER_RADIUS + 10.0, 0.0, TAU, 40, Color(0.333, 0.867, 0.878, 0.55), 3.0, true)
+		draw_arc(pos, (PLAYER_RADIUS + 10.0) * actor_scale, 0.0, TAU, 40, Color(0.333, 0.867, 0.878, 0.55), 3.0 * actor_scale, true)
 	var forward := Vector2.RIGHT.rotated(player_facing)
 	var side := forward.orthogonal()
-	var shape := PackedVector2Array([pos + forward * 24.0, pos - forward * 15.0 + side * 13.0, pos - forward * 11.0, pos - forward * 15.0 - side * 13.0])
+	var shape := PackedVector2Array([pos + forward * 24.0 * actor_scale, pos - forward * 15.0 * actor_scale + side * 13.0 * actor_scale, pos - forward * 11.0 * actor_scale, pos - forward * 15.0 * actor_scale - side * 13.0 * actor_scale])
 	draw_colored_polygon(shape, ORANGE)
-	draw_polyline(PackedVector2Array([shape[0], shape[1], shape[2], shape[3], shape[0]]), ORANGE_HOT, 2.5, true)
-	draw_circle(pos, 5.0, WHITE)
+	draw_polyline(PackedVector2Array([shape[0], shape[1], shape[2], shape[3], shape[0]]), ORANGE_HOT, 2.5 * actor_scale, true)
+	draw_circle(pos, 5.0 * actor_scale, WHITE)
 
 
 func _draw_dialogue_bubble(offset: Vector2) -> void:
 	if dialogue_speaker == DialogueSpeaker.NONE or dialogue_text.is_empty():
 		return
-	var speaker_pos := player_pos + offset
-	var speaker_radius := PLAYER_RADIUS
+	var camera_zoom := _dialogue_camera_zoom()
+	var speaker_pos := _dialogue_world_to_screen(player_pos, offset)
+	var speaker_radius := PLAYER_RADIUS * camera_zoom * _dialogue_speaker_scale()
 	var stroke := ORANGE_HOT
 	var text_color := DARK_MINT
 	if dialogue_speaker == DialogueSpeaker.GERM:
 		if dialogue_germ_index < 0 or dialogue_germ_index >= germs.size() or not bool(germs[dialogue_germ_index].active):
 			return
 		var germ := germs[dialogue_germ_index]
-		speaker_pos = Vector2(germ.pos) + offset
-		speaker_radius = germ_specs[int(germ.tier)].radius
+		speaker_pos = _dialogue_world_to_screen(Vector2(germ.pos), offset)
+		speaker_radius = germ_specs[int(germ.tier)].radius * camera_zoom * _dialogue_speaker_scale(dialogue_germ_index)
 		stroke = ORANGE_HOT if int(germ.tier) == GermData.GermTier.ELITE else PURPLE
 		text_color = PURPLE
 	var layout := _dialogue_layout(speaker_pos, dialogue_text, speaker_radius)
 	var rect: Rect2 = layout.rect
 	var tail_tip: Vector2 = layout.tail_tip
 	var tail_base: Vector2 = layout.tail_base
-	var alpha := clampf(dialogue_life / 0.22, 0.0, 1.0) * dialogue_occlusion_opacity
+	var alpha := _dialogue_bubble_alpha() * dialogue_occlusion_opacity
+	if alpha <= 0.0:
+		return
 	var fill := Color(WHITE.r, WHITE.g, WHITE.b, 0.96 * alpha)
 	var line_color := Color(stroke.r, stroke.g, stroke.b, alpha)
 	var tail_direction := -1.0 if bool(layout.above) else 1.0
@@ -1530,12 +1720,34 @@ func _draw_dialogue_bubble(offset: Vector2) -> void:
 	draw_colored_polygon(tail, fill)
 	draw_polyline(PackedVector2Array([tail[0], tail_tip, tail[1]]), line_color, 2.0, true)
 	_draw_pill(rect, fill, line_color, 2.0)
-	var lines: Array = layout.lines
+	var lines: Array = _typewriter_dialogue_lines(Array(layout.lines), dialogue_visible_characters)
 	var font_size := int(layout.font_size)
 	var line_height := float(layout.line_height)
 	var baseline := rect.position.y + 10.0 + font.get_ascent(font_size)
 	for i in lines.size():
-		_draw_text_centered(str(lines[i]), Vector2(rect.get_center().x, baseline + float(i) * line_height), font_size, Color(text_color.r, text_color.g, text_color.b, alpha))
+		_draw_text(str(lines[i]), Vector2(rect.position.x + 11.0, baseline + float(i) * line_height), font_size, Color(text_color.r, text_color.g, text_color.b, alpha))
+	if dialogue_cutscene_phase == DialogueCutscenePhase.TALKING and dialogue_visible_characters < dialogue_text.length() and fmod(dialogue_phase_time, 0.48) < 0.36:
+		var active_line := 0
+		for i in lines.size():
+			if not str(lines[i]).is_empty():
+				active_line = i
+		var typed_line := str(lines[active_line])
+		var caret_x := rect.position.x + 12.0 + font.get_string_size(typed_line, HORIZONTAL_ALIGNMENT_LEFT, -1.0, font_size).x
+		var caret_baseline := baseline + float(active_line) * line_height
+		draw_line(Vector2(caret_x, caret_baseline - font.get_ascent(font_size)), Vector2(caret_x, caret_baseline + 2.0), Color(text_color.r, text_color.g, text_color.b, alpha), 1.5, true)
+
+
+func _typewriter_dialogue_lines(full_lines: Array, visible_characters: int) -> Array[String]:
+	var visible_lines: Array[String] = []
+	var remaining := maxi(0, visible_characters)
+	for i in full_lines.size():
+		var full_line := str(full_lines[i])
+		var visible_count := mini(remaining, full_line.length())
+		visible_lines.append(full_line.left(visible_count))
+		remaining -= visible_count
+		if remaining > 0 and i < full_lines.size() - 1:
+			remaining -= 1
+	return visible_lines
 
 
 func _dialogue_layout(speaker_pos: Vector2, text: String, speaker_radius: float) -> Dictionary:
@@ -1654,9 +1866,9 @@ func _draw_reticle(pos: Vector2) -> void:
 	draw_line(pos + Vector2(0, 8), pos + Vector2(0, 20), color, 2.0)
 
 
-func _draw_hud() -> void:
-	_draw_gameplay_logo()
-	_draw_responsive_hud()
+func _draw_hud(opacity_multiplier: float = 1.0) -> void:
+	_draw_gameplay_logo(opacity_multiplier)
+	_draw_responsive_hud(opacity_multiplier)
 
 
 func _hud_unit() -> float:
@@ -1680,13 +1892,14 @@ func _gameplay_logo_bounds() -> Rect2:
 	return Rect2(rect.position - Vector2(5.0, 5.0), rect.size + Vector2(10.0, 31.0))
 
 
-func _draw_gameplay_logo() -> void:
+func _draw_gameplay_logo(opacity_multiplier: float = 1.0) -> void:
 	var rect := _gameplay_logo_rect()
-	draw_texture_rect(logo_texture, rect, false, Color(1.0, 1.0, 1.0, logo_hud_opacity))
-	_draw_text_centered("MODE // CULTURE WARS", Vector2(rect.get_center().x, rect.end.y + 16.0), clampi(roundi(_hud_unit() * 0.016), 10, 14), Color(PURPLE.r, PURPLE.g, PURPLE.b, logo_hud_opacity))
+	var opacity := logo_hud_opacity * opacity_multiplier
+	draw_texture_rect(logo_texture, rect, false, Color(1.0, 1.0, 1.0, opacity))
+	_draw_text_centered("MODE // CULTURE WARS", Vector2(rect.get_center().x, rect.end.y + 16.0), clampi(roundi(_hud_unit() * 0.016), 10, 14), Color(PURPLE.r, PURPLE.g, PURPLE.b, opacity))
 
 
-func _draw_responsive_hud() -> void:
+func _draw_responsive_hud(opacity_multiplier: float = 1.0) -> void:
 	var visual_unit := _hud_unit()
 	var top_safe := _hud_top_safe_area()
 	var label_size := _hud_label_size(visual_unit)
@@ -1705,7 +1918,7 @@ func _draw_responsive_hud() -> void:
 		true,
 		outline_size,
 		shadow_offset,
-		score_hud_opacity
+		score_hud_opacity * opacity_multiplier
 	)
 	_draw_mock_stat(
 		"TIME",
@@ -1717,12 +1930,13 @@ func _draw_responsive_hud() -> void:
 		false,
 		outline_size,
 		shadow_offset,
-		timer_hud_opacity
+		timer_hud_opacity * opacity_multiplier
 	)
 	if combo > 1:
-		var combo_fill := Color(PURPLE.r, PURPLE.g, PURPLE.b, combo_hud_opacity)
-		var combo_outline := Color(WHITE.r, WHITE.g, WHITE.b, combo_hud_opacity)
-		var combo_shadow := Color(DARK_MINT.r, DARK_MINT.g, DARK_MINT.b, combo_hud_opacity)
+		var combo_opacity := combo_hud_opacity * opacity_multiplier
+		var combo_fill := Color(PURPLE.r, PURPLE.g, PURPLE.b, combo_opacity)
+		var combo_outline := Color(WHITE.r, WHITE.g, WHITE.b, combo_opacity)
+		var combo_shadow := Color(DARK_MINT.r, DARK_MINT.g, DARK_MINT.b, combo_opacity)
 		_draw_text_with_outline(
 			"%dx COMBO" % combo,
 			Vector2(viewport_size.x - visual_unit * 0.37, top_safe + visual_unit * 0.34),
@@ -1733,7 +1947,7 @@ func _draw_responsive_hud() -> void:
 			Vector2(3.0, 3.0),
 			combo_shadow
 		)
-	_draw_responsive_boost(visual_unit, label_size, outline_size, shadow_offset, boost_hud_opacity)
+	_draw_responsive_boost(visual_unit, label_size, outline_size, shadow_offset, boost_hud_opacity * opacity_multiplier)
 
 
 func _hud_label_size(visual_unit: float) -> int:

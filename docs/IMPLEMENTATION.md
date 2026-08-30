@@ -6,6 +6,8 @@ The arena radius is derived every frame from the viewport and receives a 1.3225�
 
 Gameplay HUD typography uses a 0.72× scale treatment. Logo, score, timer, combo, and boost groups transition to 15% opacity when the player or a germ moves behind them. Speech bubbles and floating score/item popups transition to 28% opacity under the same obstruction rule, ignoring a bubble's own speaker.
 
+Dialogue runs as a short simulation-freezing cut scene without adding a camera node or runtime allocations to the actor pools. A deterministic draw transform eases from 1× to 1.58× around the speaking germ or player, holds while the line types in, and eases back before the bubble is cleared and gameplay resumes. Lines of one to four words receive a 2.2-second total duration, with another 0.25 seconds added for every word beyond four; the typewriter rate adapts to finish 0.2 seconds before the speaking phase ends. A 24-second start-to-start gate limits the channel to roughly 2.5 cut scenes per minute, with a due protagonist line taking the next available slot rather than interrupting an active speaker. The focused actor pulses inward by at most 5.5%; the HUD fades to 8% prominence while a subtle tint and letterbox frame separate the beat from active play. Manual pause freezes the cut-scene clock. Reduced Motion keeps the pause and complete line but disables the camera zoom, typewriter reveal, and speaker pulse.
+
 Target compositions are 1280×720, 1920×1080, and 2560×1080.
 
 ## Gameplay constants

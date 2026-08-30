@@ -2,7 +2,7 @@
 
 PETRI is a single-player, desktop-browser survival game built with Godot 4.7.2 and GDScript. Its main mode, **CULTURE WARS**, treats the discourse as the infection: ragebait germs split into louder opposing takes, platform elites monetize both sides, and the antibiotic protagonist notices who profits. The satire targets inflammatory rhetoric and its incentives—not demographic groups or ordinary people.
 
-You are an antibiotic particle inside a bounded culture dish: move with inertia, shoot germs, manage a rechargeable boost, and survive the debris created by splitting threats. Pulsing membrane auras telegraph every newly entering germ. Scheduled gold tank elites drop permanent automatic upgrades through item-specific pickup auras.
+You are an antibiotic particle inside a bounded culture dish: move with inertia, shoot germs, manage a rechargeable boost, and survive the debris created by splitting threats. Pulsing membrane auras telegraph every newly entering germ. When a germ or the player speaks, gameplay freezes for a brief cut scene that eases toward the speaker, types the line into a speech bubble, pulses the speaker inward, then returns to the full arena. Cut scenes are globally limited to roughly 2.5 per minute; lines up to four words receive 2.2 seconds, with another 0.25 seconds for each additional word. Scheduled gold tank elites drop permanent automatic upgrades through item-specific pickup auras.
 
 ## Controls
 
@@ -33,7 +33,7 @@ The project uses the Compatibility renderer and contains no threaded gameplay or
 godot --headless --path . --script tests/run_tests.gd
 ```
 
-The deterministic suite covers boost timing, combo scoring, germ splits, elite cadence, pickup lifecycle, all six item effects, overcharge, difficulty ramping, persistence, collision outcomes, fixed pools, and scene loading.
+The deterministic suite covers boost timing, combo scoring, germ splits, dialogue cut-scene sequencing, elite cadence, pickup lifecycle, all six item effects, overcharge, difficulty ramping, persistence, collision outcomes, fixed pools, and scene loading.
 
 ## Export for web
 
