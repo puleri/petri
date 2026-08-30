@@ -1,6 +1,8 @@
 # PETRI
 
-PETRI is a single-player, desktop-browser survival game built with Godot 4.7.2 and GDScript. You are an antibiotic particle inside a bounded culture dish: move with inertia, shoot germs, manage a rechargeable boost, and survive the debris created by splitting threats. Pulsing membrane auras telegraph every newly entering germ. Scheduled gold tank elites drop permanent automatic upgrades through item-specific pickup auras.
+PETRI is a single-player, desktop-browser survival game built with Godot 4.7.2 and GDScript. Its main mode, **CULTURE WARS**, treats the discourse as the infection: ragebait germs split into louder opposing takes, platform elites monetize both sides, and the antibiotic protagonist notices who profits. The satire targets inflammatory rhetoric and its incentives—not demographic groups or ordinary people.
+
+You are an antibiotic particle inside a bounded culture dish: move with inertia, shoot germs, manage a rechargeable boost, and survive the debris created by splitting threats. Pulsing membrane auras telegraph every newly entering germ. Scheduled gold tank elites drop permanent automatic upgrades through item-specific pickup auras.
 
 ## Controls
 
@@ -65,6 +67,7 @@ No remote is created until a repository URL is supplied.
 ## Architecture
 
 - `scripts/petri_game.gd` — pooled simulation, input, responsive rendering, menus, HUD, settings, and run lifecycle
+- `scripts/culture_war_dialogue.gd` — deterministic Culture Wars topics, opposing stances, escalation lines, and protagonist/elite commentary
 - `scripts/game_math.gd` — deterministic gameplay rules used by runtime and tests
 - `scripts/item_data.gd` — public item enum, display specifications, and level curves
 - `scripts/germ_data.gd` and `data/*.tres` — public `GermTier` data resources

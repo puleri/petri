@@ -4,6 +4,8 @@
 
 The arena radius is derived every frame from the viewport and receives a 1.3225× play-space scale (15% larger than the previous 1.15× treatment). Every viewport uses the angled mockup-style score, time, boost, rails, and logo composition through a shared responsive unit. Widths below 1024 CSS pixels reserve a top safe area for the keyboard-and-mouse recommendation.
 
+Gameplay HUD typography uses a 0.72× scale treatment. Logo, score, timer, combo, and boost groups transition to 15% opacity when the player or a germ moves behind them. Speech bubbles and floating score/item popups transition to 28% opacity under the same obstruction rule, ignoring a bubble's own speaker.
+
 Target compositions are 1280×720, 1920×1080, and 2560×1080.
 
 ## Gameplay constants
@@ -16,7 +18,8 @@ Target compositions are 1280×720, 1920×1080, and 2560×1080.
 - Spawn protection: 1.5 s
 - Lethal membrane impact: outward speed over 240 px/s
 - Debris lifetime: 12 s
-- Germ spawn telegraph: 1.02 s pulsing aura before activation
+- Germ spawn telegraph: 2.5 s pulsing aura before activation
+- Split descendants spawn at 75% of their tier's normal velocity
 - Item drop telegraph: 0.85 s item-specific aura before pickup activation
 
 ## Elite items

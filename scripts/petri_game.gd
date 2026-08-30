@@ -12,6 +12,7 @@ signal item_overcharge_changed(item_type: int, seconds_left: float)
 
 enum AppState { MENU, HOW_TO, PLAYING, PAUSED, SETTINGS, GAME_OVER }
 enum ProjectileOwner { PLAYER, TURRET }
+enum DialogueSpeaker { NONE, GERM, PLAYER }
 
 const BG := Color("#D7FFF8")
 const MINT := Color("#B2DBD5")
@@ -45,7 +46,8 @@ const TURRET_POOL_SIZE := 3
 const MINE_POOL_SIZE := 48
 const PICKUP_POOL_SIZE := 4
 const ARENA_SCALE := 1.3225
-const GERM_SPAWN_TELEGRAPH_SECONDS := 1.02
+const GERM_SPAWN_TELEGRAPH_SECONDS := 2.5
+const SPLIT_CHILD_SPEED_MULTIPLIER := 0.75
 const ITEM_SPAWN_TELEGRAPH_SECONDS := 0.85
 const ITEM_PICKUP_LIFETIME := 15.0
 const ITEM_PICKUP_RADIUS := 18.0
@@ -58,6 +60,18 @@ const TURRET_BULLET_LIFETIME := 1.5
 const MINE_ARM_SECONDS := 0.25
 const MINE_LIFETIME := 8.0
 const MINE_TRIGGER_RADIUS := 30.0
+const GERM_DIALOGUE_DURATION := 2.2
+const PLAYER_DIALOGUE_DURATION := 3.2
+const DIALOGUE_COOLDOWN_SECONDS := 4.0
+const PLAYER_DIALOGUE_MIN_INTERVAL := 24.0
+const PLAYER_DIALOGUE_MAX_INTERVAL := 34.0
+const DIALOGUE_MAX_TEXT_WIDTH := 280.0
+const HUD_SCALE := 0.72
+const HUD_OCCLUDED_OPACITY := 0.15
+const WORLD_TEXT_OCCLUDED_OPACITY := 0.28
+const OPACITY_TRANSITION_SPEED := 4.5
+
+const CULTURE_WAR_DIALOGUE := preload("res://scripts/culture_war_dialogue.gd")
 
 var font: Font = preload("res://Excelorate-Font.otf")
 var logo_texture: Texture2D = preload("res://assets/figma/petri-logo.png")
@@ -117,6 +131,19 @@ var turrets: Array[Dictionary] = []
 var mines: Array[Dictionary] = []
 var item_levels: Array[int] = []
 var popups: Array[Dictionary] = []
+var dialogue_speaker := DialogueSpeaker.NONE
+var dialogue_germ_index := -1
+var dialogue_text := ""
+var dialogue_life := 0.0
+var dialogue_cooldown := 0.0
+var next_player_dialogue_time := INF
+var pending_dialogue_germ_indices: Array[int] = [-1, -1]
+var logo_hud_opacity := 1.0
+var score_hud_opacity := 1.0
+var timer_hud_opacity := 1.0
+var combo_hud_opacity := 1.0
+var boost_hud_opacity := 1.0
+var dialogue_occlusion_opacity := 1.0
 
 
 func _ready() -> void:
@@ -135,7 +162,7 @@ func _create_pools() -> void:
 	for i in PELLET_POOL_SIZE:
 		pellets.append({"active": false, "pos": Vector2.ZERO, "vel": Vector2.ZERO, "life": 0.0, "bounces": 0, "owner": ProjectileOwner.PLAYER})
 	for i in GameMath.MAX_GERMS:
-		germs.append({"active": false, "tier": GermData.GermTier.LARGE, "pos": Vector2.ZERO, "vel": Vector2.ZERO, "hp": 0, "phase": 0.0, "hitter_cooldown": 0.0})
+		germs.append({"active": false, "tier": GermData.GermTier.LARGE, "pos": Vector2.ZERO, "vel": Vector2.ZERO, "hp": 0, "phase": 0.0, "hitter_cooldown": 0.0, "topic_id": -1, "stance": -1})
 	for i in GameMath.MAX_FRAGMENTS:
 		debris.append({"active": false, "pos": Vector2.ZERO, "vel": Vector2.ZERO, "life": 0.0, "angle": 0.0, "spin": 0.0, "hitter_cooldown": 0.0})
 	for i in TURRET_POOL_SIZE:
@@ -154,6 +181,7 @@ func _process(delta: float) -> void:
 	if state == AppState.PLAYING:
 		_update_run(delta)
 	_update_popups(delta)
+	_update_overlay_opacities(delta)
 	screen_shake = maxf(0.0, screen_shake - delta * 2.6)
 	queue_redraw()
 
@@ -176,6 +204,7 @@ func _update_layout() -> void:
 
 func _update_run(delta: float) -> void:
 	run_time += delta
+	_update_dialogue(delta)
 	spawn_protection_left = maxf(0.0, spawn_protection_left - delta)
 	fire_cooldown = maxf(0.0, fire_cooldown - delta)
 	_update_overcharge(delta)
@@ -590,7 +619,7 @@ func _resolve_hostile_hits() -> void:
 			return
 
 
-func _spawn_germ(tier: int, position_override: Variant = null) -> bool:
+func _spawn_germ(tier: int, position_override: Variant = null, topic_override: int = -1, stance_override: int = -1, dialogue_priority: bool = false, speed_multiplier: float = 1.0) -> bool:
 	var first_index := GameMath.MAX_REGULAR_GERMS if tier == GermData.GermTier.ELITE else 0
 	var end_index := GameMath.MAX_GERMS if tier == GermData.GermTier.ELITE else GameMath.MAX_REGULAR_GERMS
 	for i in range(first_index, end_index):
@@ -601,9 +630,16 @@ func _spawn_germ(tier: int, position_override: Variant = null) -> bool:
 		var at := _spawn_position(tier, angle)
 		if position_override != null:
 			at = Vector2(position_override)
-		var speed := rng.randf_range(spec.speed_min, spec.speed_max)
+		var speed := rng.randf_range(spec.speed_min, spec.speed_max) * speed_multiplier
 		var direction := (player_pos - at).normalized().rotated(rng.randf_range(-0.5, 0.5))
-		germs[i] = {"active": true, "tier": tier, "pos": at, "vel": direction * speed, "hp": spec.hp, "phase": rng.randf_range(0.0, TAU), "hitter_cooldown": 0.0}
+		var topic_id := -1
+		var stance := -1
+		if tier != GermData.GermTier.ELITE:
+			topic_id = topic_override if topic_override >= 0 else rng.randi_range(0, CULTURE_WAR_DIALOGUE.topic_count() - 1)
+			if tier != GermData.GermTier.LARGE:
+				stance = stance_override if stance_override >= 0 else rng.randi_range(CULTURE_WAR_DIALOGUE.STANCE_A, CULTURE_WAR_DIALOGUE.STANCE_B)
+		germs[i] = {"active": true, "tier": tier, "pos": at, "vel": direction * speed, "hp": spec.hp, "phase": rng.randf_range(0.0, TAU), "hitter_cooldown": 0.0, "topic_id": topic_id, "stance": stance}
+		_try_show_germ_dialogue(i, dialogue_priority or tier == GermData.GermTier.LARGE)
 		return true
 	return false
 
@@ -734,7 +770,7 @@ func _collect_pickup(pickup: Dictionary) -> void:
 			aoe_timer = minf(aoe_timer, ItemData.aoe_interval(_effective_item_level(item_type)))
 		elif item_type == ItemData.ItemType.LEAVE_BEHIND:
 			mine_timer = minf(mine_timer, ItemData.mine_interval(_effective_item_level(item_type)))
-	popups.append({"pos": player_pos, "text": popup_text, "life": 1.2, "duration": 1.2, "item_type": item_type})
+	popups.append({"pos": player_pos, "text": popup_text, "life": 1.2, "duration": 1.2, "item_type": item_type, "occlusion_opacity": 1.0})
 	audio.play_sfx("item_pickup")
 	emit_signal("item_collected", item_type, collected_level)
 
@@ -788,13 +824,19 @@ func _spawn_debris(at: Vector2, count: int) -> void:
 func _destroy_germ(index: int) -> void:
 	var tier := int(germs[index].tier)
 	var at := Vector2(germs[index].pos)
+	var topic_id := int(germs[index].get("topic_id", -1))
+	var stance := int(germs[index].get("stance", -1))
 	germs[index].active = false
+	_remove_pending_dialogue(index)
+	if dialogue_speaker == DialogueSpeaker.GERM and dialogue_germ_index == index:
+		_clear_dialogue_bubble()
 	var spec := germ_specs[tier]
 	_award_kill(spec.score, at)
 	var split := GameMath.split_result(tier)
 	for child in int(split.children):
 		var offset := Vector2.RIGHT.rotated(TAU * float(child) / maxf(1.0, float(split.children)) + rng.randf_range(-0.25, 0.25)) * 16.0
-		_spawn_germ(int(split.child_tier), at + offset)
+		var child_stance := child if tier == GermData.GermTier.LARGE else stance
+		_spawn_germ(int(split.child_tier), at + offset, topic_id, child_stance, true, SPLIT_CHILD_SPEED_MULTIPLIER)
 	_spawn_debris(at, int(split.fragments))
 	if tier == GermData.GermTier.ELITE:
 		_queue_item_warning(at)
@@ -808,7 +850,7 @@ func _award_kill(base: int, at: Vector2) -> void:
 	last_kill_time = run_time
 	var points := GameMath.awarded_score(base, combo)
 	score += points
-	popups.append({"pos": at, "text": "+%d%s" % [points, "   %dx" % combo if combo > 1 else ""], "life": 0.8, "duration": 0.8, "item_type": -1})
+	popups.append({"pos": at, "text": "+%d%s" % [points, "   %dx" % combo if combo > 1 else ""], "life": 0.8, "duration": 0.8, "item_type": -1, "occlusion_opacity": 1.0})
 	emit_signal("score_changed", score)
 	emit_signal("combo_changed", combo)
 
@@ -860,8 +902,173 @@ func _update_popups(delta: float) -> void:
 	for i in range(popups.size() - 1, -1, -1):
 		popups[i].life = float(popups[i].life) - delta
 		popups[i].pos = Vector2(popups[i].pos) + Vector2.UP * 32.0 * delta
+		var target_opacity := _overlay_target_opacity(_popup_bounds(popups[i]), -1, false, WORLD_TEXT_OCCLUDED_OPACITY)
+		popups[i].occlusion_opacity = move_toward(float(popups[i].get("occlusion_opacity", 1.0)), target_opacity, delta * OPACITY_TRANSITION_SPEED)
 		if float(popups[i].life) <= 0.0:
 			popups.remove_at(i)
+
+
+func _update_overlay_opacities(delta: float) -> void:
+	if state == AppState.MENU or state == AppState.HOW_TO or state == AppState.SETTINGS:
+		logo_hud_opacity = move_toward(logo_hud_opacity, 1.0, delta * OPACITY_TRANSITION_SPEED)
+		score_hud_opacity = move_toward(score_hud_opacity, 1.0, delta * OPACITY_TRANSITION_SPEED)
+		timer_hud_opacity = move_toward(timer_hud_opacity, 1.0, delta * OPACITY_TRANSITION_SPEED)
+		combo_hud_opacity = move_toward(combo_hud_opacity, 1.0, delta * OPACITY_TRANSITION_SPEED)
+		boost_hud_opacity = move_toward(boost_hud_opacity, 1.0, delta * OPACITY_TRANSITION_SPEED)
+		dialogue_occlusion_opacity = move_toward(dialogue_occlusion_opacity, 1.0, delta * OPACITY_TRANSITION_SPEED)
+		return
+	logo_hud_opacity = move_toward(logo_hud_opacity, _overlay_target_opacity(_gameplay_logo_bounds()), delta * OPACITY_TRANSITION_SPEED)
+	score_hud_opacity = move_toward(score_hud_opacity, _overlay_target_opacity(_score_bounds()), delta * OPACITY_TRANSITION_SPEED)
+	timer_hud_opacity = move_toward(timer_hud_opacity, _timer_opacity(), delta * OPACITY_TRANSITION_SPEED)
+	combo_hud_opacity = move_toward(combo_hud_opacity, _overlay_target_opacity(_combo_bounds()), delta * OPACITY_TRANSITION_SPEED)
+	boost_hud_opacity = move_toward(boost_hud_opacity, _overlay_target_opacity(_boost_bounds()), delta * OPACITY_TRANSITION_SPEED)
+	var dialogue_target := 1.0
+	if dialogue_speaker != DialogueSpeaker.NONE and not dialogue_text.is_empty():
+		var speaker_pos := player_pos
+		var speaker_radius := PLAYER_RADIUS
+		var ignored_germ := -1
+		var ignore_player := dialogue_speaker == DialogueSpeaker.PLAYER
+		if dialogue_speaker == DialogueSpeaker.GERM and dialogue_germ_index >= 0 and dialogue_germ_index < germs.size() and bool(germs[dialogue_germ_index].active):
+			speaker_pos = Vector2(germs[dialogue_germ_index].pos)
+			speaker_radius = germ_specs[int(germs[dialogue_germ_index].tier)].radius
+			ignored_germ = dialogue_germ_index
+		var layout := _dialogue_layout(speaker_pos, dialogue_text, speaker_radius)
+		dialogue_target = _overlay_target_opacity(Rect2(layout.rect), ignored_germ, ignore_player, WORLD_TEXT_OCCLUDED_OPACITY)
+	dialogue_occlusion_opacity = move_toward(dialogue_occlusion_opacity, dialogue_target, delta * OPACITY_TRANSITION_SPEED)
+
+
+func _overlay_target_opacity(rect: Rect2, ignored_germ_index: int = -1, ignore_player: bool = false, occluded_opacity: float = HUD_OCCLUDED_OPACITY) -> float:
+	if not ignore_player and _circle_intersects_rect(player_pos, PLAYER_RADIUS, rect):
+		return occluded_opacity
+	for i in germs.size():
+		if i == ignored_germ_index or not bool(germs[i].active):
+			continue
+		var radius := germ_specs[int(germs[i].tier)].radius
+		if _circle_intersects_rect(Vector2(germs[i].pos), radius, rect):
+			return occluded_opacity
+	return 1.0
+
+
+func _popup_bounds(popup: Dictionary) -> Rect2:
+	var font_size := 18
+	var text := str(popup.text)
+	var width := font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1.0, font_size).x
+	var baseline := Vector2(popup.pos)
+	return Rect2(
+		Vector2(baseline.x - width * 0.5 - 3.0, baseline.y - font.get_ascent(font_size) - 3.0),
+		Vector2(width + 6.0, font.get_height(font_size) + 6.0)
+	)
+
+
+func _update_dialogue(delta: float) -> void:
+	dialogue_cooldown = maxf(0.0, dialogue_cooldown - delta)
+	if dialogue_speaker == DialogueSpeaker.GERM:
+		if dialogue_germ_index < 0 or dialogue_germ_index >= germs.size() or not bool(germs[dialogue_germ_index].active):
+			_clear_dialogue_bubble()
+	if dialogue_speaker != DialogueSpeaker.NONE:
+		dialogue_life = maxf(0.0, dialogue_life - delta)
+		if dialogue_life <= 0.0:
+			_clear_dialogue_bubble()
+	if run_time >= next_player_dialogue_time:
+		_show_player_dialogue()
+	elif dialogue_speaker == DialogueSpeaker.NONE and dialogue_cooldown <= 0.0:
+		_show_next_pending_dialogue()
+
+
+func _try_show_germ_dialogue(index: int, queue_if_blocked: bool = false) -> bool:
+	if index < 0 or index >= germs.size() or not bool(germs[index].active):
+		return false
+	var tier := int(germs[index].tier)
+	var is_elite := tier == GermData.GermTier.ELITE
+	if dialogue_speaker == DialogueSpeaker.PLAYER:
+		if queue_if_blocked and not is_elite:
+			_queue_pending_dialogue(index)
+		return false
+	if is_elite:
+		_clear_dialogue_bubble()
+	elif dialogue_speaker != DialogueSpeaker.NONE or dialogue_cooldown > 0.0:
+		if queue_if_blocked:
+			_queue_pending_dialogue(index)
+		return false
+	var line := ""
+	if is_elite:
+		line = CULTURE_WAR_DIALOGUE.elite_line(rng.randi())
+	else:
+		line = CULTURE_WAR_DIALOGUE.regular_line(
+			int(germs[index].topic_id),
+			int(germs[index].stance),
+			_dialogue_intensity(tier),
+			rng.randi()
+		)
+	_show_dialogue(DialogueSpeaker.GERM, index, line, GERM_DIALOGUE_DURATION)
+	return true
+
+
+func _queue_pending_dialogue(index: int) -> void:
+	if index in pending_dialogue_germ_indices:
+		return
+	for i in pending_dialogue_germ_indices.size():
+		if pending_dialogue_germ_indices[i] < 0:
+			pending_dialogue_germ_indices[i] = index
+			return
+
+
+func _show_next_pending_dialogue() -> void:
+	for i in pending_dialogue_germ_indices.size():
+		var index := pending_dialogue_germ_indices[i]
+		pending_dialogue_germ_indices[i] = -1
+		if index >= 0 and index < germs.size() and bool(germs[index].active) and _try_show_germ_dialogue(index):
+			return
+
+
+func _remove_pending_dialogue(index: int) -> void:
+	for i in pending_dialogue_germ_indices.size():
+		if pending_dialogue_germ_indices[i] == index:
+			pending_dialogue_germ_indices[i] = -1
+
+
+func _show_player_dialogue() -> void:
+	_show_dialogue(
+		DialogueSpeaker.PLAYER,
+		-1,
+		CULTURE_WAR_DIALOGUE.player_line(rng.randi()),
+		PLAYER_DIALOGUE_DURATION
+	)
+	next_player_dialogue_time = run_time + rng.randf_range(PLAYER_DIALOGUE_MIN_INTERVAL, PLAYER_DIALOGUE_MAX_INTERVAL)
+
+
+func _show_dialogue(speaker: int, germ_index: int, text: String, duration: float) -> void:
+	dialogue_speaker = speaker
+	dialogue_germ_index = germ_index
+	dialogue_text = text
+	dialogue_life = duration
+	dialogue_cooldown = duration + DIALOGUE_COOLDOWN_SECONDS
+
+
+func _clear_dialogue_bubble() -> void:
+	dialogue_speaker = DialogueSpeaker.NONE
+	dialogue_germ_index = -1
+	dialogue_text = ""
+	dialogue_life = 0.0
+	dialogue_occlusion_opacity = 1.0
+
+
+func _reset_dialogue() -> void:
+	_clear_dialogue_bubble()
+	dialogue_cooldown = 0.0
+	next_player_dialogue_time = INF
+	for i in pending_dialogue_germ_indices.size():
+		pending_dialogue_germ_indices[i] = -1
+
+
+func _dialogue_intensity(tier: int) -> int:
+	match tier:
+		GermData.GermTier.LARGE:
+			return CULTURE_WAR_DIALOGUE.INTENSITY_OPENER
+		GermData.GermTier.MEDIUM:
+			return CULTURE_WAR_DIALOGUE.INTENSITY_MEDIUM
+		_:
+			return CULTURE_WAR_DIALOGUE.INTENSITY_SMALL
 
 
 func _start_run() -> void:
@@ -875,6 +1082,12 @@ func _start_run() -> void:
 	for i in item_levels.size(): item_levels[i] = 0
 	spawn_warnings.clear()
 	popups.clear()
+	_reset_dialogue()
+	logo_hud_opacity = 1.0
+	score_hud_opacity = 1.0
+	timer_hud_opacity = 1.0
+	combo_hud_opacity = 1.0
+	boost_hud_opacity = 1.0
 	run_time = 0.0
 	score = 0
 	combo = 1
@@ -898,6 +1111,7 @@ func _start_run() -> void:
 	spawn_timer = GameMath.spawn_interval(0.0)
 	death_reason = ""
 	state = AppState.PLAYING
+	next_player_dialogue_time = rng.randf_range(PLAYER_DIALOGUE_MIN_INTERVAL, PLAYER_DIALOGUE_MAX_INTERVAL)
 	audio.unlock()
 	audio.play_sfx("ui")
 	var opening_tiers := [GermData.GermTier.LARGE, GermData.GermTier.MEDIUM, GermData.GermTier.MEDIUM, GermData.GermTier.SMALL, GermData.GermTier.SMALL]
@@ -915,6 +1129,7 @@ func _finish_run(reason: String) -> void:
 		return
 	death_reason = reason
 	state = AppState.GAME_OVER
+	_clear_dialogue_bubble()
 	boost_active = false
 	save_store.update_bests(score, run_time, saved)
 	audio.play_sfx("game_over")
@@ -1096,11 +1311,12 @@ func _draw_game_world() -> void:
 	_draw_reticle(get_global_mouse_position())
 	for popup in popups:
 		var duration := float(popup.get("duration", 0.8))
-		var alpha := clampf(float(popup.life) / duration, 0.0, 1.0)
+		var alpha := clampf(float(popup.life) / duration, 0.0, 1.0) * float(popup.get("occlusion_opacity", 1.0))
 		var popup_color := PURPLE
 		if int(popup.get("item_type", -1)) >= 0:
 			popup_color = ItemData.color(int(popup.item_type))
-		_draw_text_centered(str(popup.text), Vector2(popup.pos) + offset, 24, Color(popup_color.r, popup_color.g, popup_color.b, alpha))
+		_draw_text_centered(str(popup.text), Vector2(popup.pos) + offset, 18, Color(popup_color.r, popup_color.g, popup_color.b, alpha))
+	_draw_dialogue_bubble(offset)
 	_draw_hud()
 
 
@@ -1283,6 +1499,152 @@ func _draw_player(offset: Vector2) -> void:
 	draw_circle(pos, 5.0, WHITE)
 
 
+func _draw_dialogue_bubble(offset: Vector2) -> void:
+	if dialogue_speaker == DialogueSpeaker.NONE or dialogue_text.is_empty():
+		return
+	var speaker_pos := player_pos + offset
+	var speaker_radius := PLAYER_RADIUS
+	var stroke := ORANGE_HOT
+	var text_color := DARK_MINT
+	if dialogue_speaker == DialogueSpeaker.GERM:
+		if dialogue_germ_index < 0 or dialogue_germ_index >= germs.size() or not bool(germs[dialogue_germ_index].active):
+			return
+		var germ := germs[dialogue_germ_index]
+		speaker_pos = Vector2(germ.pos) + offset
+		speaker_radius = germ_specs[int(germ.tier)].radius
+		stroke = ORANGE_HOT if int(germ.tier) == GermData.GermTier.ELITE else PURPLE
+		text_color = PURPLE
+	var layout := _dialogue_layout(speaker_pos, dialogue_text, speaker_radius)
+	var rect: Rect2 = layout.rect
+	var tail_tip: Vector2 = layout.tail_tip
+	var tail_base: Vector2 = layout.tail_base
+	var alpha := clampf(dialogue_life / 0.22, 0.0, 1.0) * dialogue_occlusion_opacity
+	var fill := Color(WHITE.r, WHITE.g, WHITE.b, 0.96 * alpha)
+	var line_color := Color(stroke.r, stroke.g, stroke.b, alpha)
+	var tail_direction := -1.0 if bool(layout.above) else 1.0
+	var tail := PackedVector2Array([
+		tail_base + Vector2(-7.0, tail_direction),
+		tail_base + Vector2(7.0, tail_direction),
+		tail_tip,
+	])
+	draw_colored_polygon(tail, fill)
+	draw_polyline(PackedVector2Array([tail[0], tail_tip, tail[1]]), line_color, 2.0, true)
+	_draw_pill(rect, fill, line_color, 2.0)
+	var lines: Array = layout.lines
+	var font_size := int(layout.font_size)
+	var line_height := float(layout.line_height)
+	var baseline := rect.position.y + 10.0 + font.get_ascent(font_size)
+	for i in lines.size():
+		_draw_text_centered(str(lines[i]), Vector2(rect.get_center().x, baseline + float(i) * line_height), font_size, Color(text_color.r, text_color.g, text_color.b, alpha))
+
+
+func _dialogue_layout(speaker_pos: Vector2, text: String, speaker_radius: float) -> Dictionary:
+	var font_size := clampi(roundi(_hud_unit() * 0.017), 10, 14)
+	var max_text_width := clampf(float(font_size) * 18.5, 190.0, DIALOGUE_MAX_TEXT_WIDTH)
+	var lines := _wrap_dialogue_text(text, max_text_width, font_size)
+	var text_width := 0.0
+	for line in lines:
+		text_width = maxf(text_width, font.get_string_size(str(line), HORIZONTAL_ALIGNMENT_LEFT, -1.0, font_size).x)
+	var line_height := float(font_size + 4)
+	var bubble_size := Vector2(clampf(text_width + 22.0, 100.0, max_text_width + 22.0), float(lines.size()) * line_height + 14.0)
+	var safe_left := maxf(12.0, arena_center.x - arena_radius + 8.0)
+	var safe_right := minf(viewport_size.x - 12.0, arena_center.x + arena_radius - 8.0)
+	if safe_right - safe_left < bubble_size.x:
+		safe_left = 12.0
+		safe_right = viewport_size.x - 12.0
+	var safe_top := _hud_top_safe_area() + 12.0
+	var safe_bottom := viewport_size.y - 16.0
+	var gap := 16.0
+	var above_y := speaker_pos.y - speaker_radius - gap - bubble_size.y
+	var below_y := speaker_pos.y + speaker_radius + gap
+	var centered_x := speaker_pos.x - bubble_size.x * 0.5
+	var inward_x := speaker_pos.x + speaker_radius + gap if speaker_pos.x < arena_center.x else speaker_pos.x - speaker_radius - gap - bubble_size.x
+	var center_x := arena_center.x - bubble_size.x * 0.5
+	var candidates := [
+		{"x": centered_x, "y": above_y, "above": true},
+		{"x": centered_x, "y": below_y, "above": false},
+		{"x": inward_x, "y": above_y, "above": true},
+		{"x": inward_x, "y": below_y, "above": false},
+		{"x": center_x, "y": above_y, "above": true},
+		{"x": center_x, "y": below_y, "above": false},
+	]
+	var rect := Rect2()
+	var place_above := true
+	var best_overlap := INF
+	for candidate in candidates:
+		var candidate_rect := Rect2(
+			Vector2(
+				clampf(float(candidate.x), safe_left, safe_right - bubble_size.x),
+				clampf(float(candidate.y), safe_top, safe_bottom - bubble_size.y)
+			),
+			bubble_size
+		)
+		var overlap := _dialogue_hud_overlap(candidate_rect)
+		if overlap < best_overlap:
+			best_overlap = overlap
+			rect = candidate_rect
+			place_above = bool(candidate.above)
+		if is_zero_approx(overlap):
+			break
+	var base_y := rect.end.y if place_above else rect.position.y
+	var base_x := clampf(speaker_pos.x, rect.position.x + 18.0, rect.end.x - 18.0)
+	var tip_y := speaker_pos.y - speaker_radius if place_above else speaker_pos.y + speaker_radius
+	return {
+		"rect": rect,
+		"lines": lines,
+		"font_size": font_size,
+		"line_height": line_height,
+		"tail_base": Vector2(base_x, base_y),
+		"tail_tip": Vector2(speaker_pos.x, tip_y),
+		"above": place_above,
+	}
+
+
+func _dialogue_hud_overlap(rect: Rect2) -> float:
+	var overlap := 0.0
+	for reserved in _dialogue_hud_reserved_rects():
+		var intersection := rect.intersection(reserved)
+		overlap += intersection.size.x * intersection.size.y
+	return overlap
+
+
+func _dialogue_hud_reserved_rects() -> Array[Rect2]:
+	var reserved: Array[Rect2] = [
+		_gameplay_logo_bounds().grow(5.0),
+		_score_bounds().grow(5.0),
+		_timer_bounds().grow(5.0),
+		_boost_bounds().grow(5.0),
+	]
+	if combo > 1:
+		reserved.append(_combo_bounds().grow(5.0))
+	return reserved
+
+
+func _wrap_dialogue_text(text: String, max_width: float, font_size: int) -> Array[String]:
+	var lines: Array[String] = []
+	var current := ""
+	for word in text.split(" ", false):
+		var candidate := str(word) if current.is_empty() else "%s %s" % [current, word]
+		if current.is_empty() or font.get_string_size(candidate, HORIZONTAL_ALIGNMENT_LEFT, -1.0, font_size).x <= max_width:
+			current = candidate
+		elif lines.is_empty():
+			lines.append(current)
+			current = str(word)
+		else:
+			current = "%s %s" % [current, word]
+	if not current.is_empty():
+		lines.append(current)
+	if lines.size() > 2:
+		var overflow := " ".join(lines.slice(1))
+		lines = [lines[0], overflow]
+	while font.get_string_size(lines[lines.size() - 1], HORIZONTAL_ALIGNMENT_LEFT, -1.0, font_size).x > max_width:
+		var shortened := lines[lines.size() - 1].trim_suffix("…")
+		if shortened.length() <= 1:
+			break
+		lines[lines.size() - 1] = shortened.left(shortened.length() - 1).strip_edges() + "…"
+	return lines
+
+
 func _draw_reticle(pos: Vector2) -> void:
 	var color := Color(0.439, 0.627, 0.592, 0.9)
 	draw_arc(pos, 12.0, 0.0, TAU, 24, color, 2.0, true)
@@ -1307,24 +1669,31 @@ func _hud_top_safe_area() -> float:
 
 func _gameplay_logo_rect() -> Rect2:
 	var visual_unit := _hud_unit()
-	var logo_width := clampf(minf(viewport_size.x * 0.22, visual_unit * 0.46), 110.0, 500.0)
+	var logo_width := clampf(minf(viewport_size.x * 0.18, visual_unit * 0.36), 92.0, 380.0)
 	var logo_height := logo_width * float(logo_texture.get_height()) / float(logo_texture.get_width())
-	var inset := maxf(18.0, visual_unit * 0.075)
+	var inset := maxf(16.0, visual_unit * 0.06)
 	return Rect2(Vector2(inset, inset + _hud_top_safe_area()), Vector2(logo_width, logo_height))
 
 
+func _gameplay_logo_bounds() -> Rect2:
+	var rect := _gameplay_logo_rect()
+	return Rect2(rect.position - Vector2(5.0, 5.0), rect.size + Vector2(10.0, 31.0))
+
+
 func _draw_gameplay_logo() -> void:
-	draw_texture_rect(logo_texture, _gameplay_logo_rect(), false)
+	var rect := _gameplay_logo_rect()
+	draw_texture_rect(logo_texture, rect, false, Color(1.0, 1.0, 1.0, logo_hud_opacity))
+	_draw_text_centered("MODE // CULTURE WARS", Vector2(rect.get_center().x, rect.end.y + 16.0), clampi(roundi(_hud_unit() * 0.016), 10, 14), Color(PURPLE.r, PURPLE.g, PURPLE.b, logo_hud_opacity))
 
 
 func _draw_responsive_hud() -> void:
 	var visual_unit := _hud_unit()
 	var top_safe := _hud_top_safe_area()
-	var label_size := roundi(clampf(visual_unit * 0.063, 20.0, 76.0))
-	var value_size := roundi(clampf(visual_unit * 0.125, 42.0, 178.0))
-	var time_value_size := roundi(clampf(visual_unit * 0.14, 40.0, 132.0))
-	var outline_size := maxi(2, roundi(visual_unit * 0.011))
-	var shadow_offset := Vector2.ONE * maxf(3.0, visual_unit * 0.013)
+	var label_size := _hud_label_size(visual_unit)
+	var value_size := _hud_score_size(visual_unit)
+	var time_value_size := _hud_time_size(visual_unit)
+	var outline_size := _hud_outline_size(visual_unit)
+	var shadow_offset := _hud_shadow_offset(visual_unit)
 
 	_draw_mock_stat(
 		"SCORE",
@@ -1335,7 +1704,8 @@ func _draw_responsive_hud() -> void:
 		value_size,
 		true,
 		outline_size,
-		shadow_offset
+		shadow_offset,
+		score_hud_opacity
 	)
 	_draw_mock_stat(
 		"TIME",
@@ -1346,57 +1716,185 @@ func _draw_responsive_hud() -> void:
 		time_value_size,
 		false,
 		outline_size,
-		shadow_offset
+		shadow_offset,
+		timer_hud_opacity
 	)
 	if combo > 1:
+		var combo_fill := Color(PURPLE.r, PURPLE.g, PURPLE.b, combo_hud_opacity)
+		var combo_outline := Color(WHITE.r, WHITE.g, WHITE.b, combo_hud_opacity)
+		var combo_shadow := Color(DARK_MINT.r, DARK_MINT.g, DARK_MINT.b, combo_hud_opacity)
 		_draw_text_with_outline(
 			"%dx COMBO" % combo,
 			Vector2(viewport_size.x - visual_unit * 0.37, top_safe + visual_unit * 0.34),
-			maxi(20, label_size / 2),
-			PURPLE,
-			WHITE,
+			maxi(15, roundi(float(label_size) * 0.55)),
+			combo_fill,
+			combo_outline,
 			maxi(2, outline_size / 2),
-			Vector2(4.0, 4.0),
-			DARK_MINT
+			Vector2(3.0, 3.0),
+			combo_shadow
 		)
-	_draw_responsive_boost(visual_unit, label_size, outline_size, shadow_offset)
+	_draw_responsive_boost(visual_unit, label_size, outline_size, shadow_offset, boost_hud_opacity)
 
 
-func _draw_mock_stat(label: String, value: String, origin: Vector2, rotation: float, label_size: int, value_size: int, align_right: bool, outline_size: int, shadow_offset: Vector2) -> void:
+func _hud_label_size(visual_unit: float) -> int:
+	return roundi(clampf(visual_unit * 0.063 * HUD_SCALE, 16.0, 54.0))
+
+
+func _hud_score_size(visual_unit: float) -> int:
+	return roundi(clampf(visual_unit * 0.122 * HUD_SCALE, 30.0, 124.0))
+
+
+func _hud_time_size(visual_unit: float) -> int:
+	return roundi(clampf(visual_unit * 0.132 * HUD_SCALE, 30.0, 96.0))
+
+
+func _hud_outline_size(visual_unit: float) -> int:
+	return maxi(2, roundi(visual_unit * 0.0075))
+
+
+func _hud_shadow_offset(visual_unit: float) -> Vector2:
+	return Vector2.ONE * maxf(2.0, visual_unit * 0.009)
+
+
+func _draw_mock_stat(label: String, value: String, origin: Vector2, rotation: float, label_size: int, value_size: int, align_right: bool, outline_size: int, shadow_offset: Vector2, opacity: float = 1.0) -> void:
 	draw_set_transform(origin, rotation, Vector2.ONE)
 	var label_width := font.get_string_size(label, HORIZONTAL_ALIGNMENT_LEFT, -1.0, label_size).x
 	var value_width := font.get_string_size(value, HORIZONTAL_ALIGNMENT_LEFT, -1.0, value_size).x
-	_draw_text_with_outline(label, Vector2(-label_width if align_right else 0.0, 0.0), label_size, DARK_MINT, WHITE, outline_size, shadow_offset, DARK_MINT)
-	_draw_text_with_outline(value, Vector2(-value_width if align_right else 0.0, value_size * 0.91), value_size, DARK_MINT, WHITE, outline_size, shadow_offset, DARK_MINT)
+	var fill := Color(DARK_MINT.r, DARK_MINT.g, DARK_MINT.b, DARK_MINT.a * opacity)
+	var outline := Color(WHITE.r, WHITE.g, WHITE.b, WHITE.a * opacity)
+	var shadow := Color(DARK_MINT.r, DARK_MINT.g, DARK_MINT.b, DARK_MINT.a * opacity)
+	_draw_text_with_outline(label, Vector2(-label_width if align_right else 0.0, 0.0), label_size, fill, outline, outline_size, shadow_offset, shadow)
+	_draw_text_with_outline(value, Vector2(-value_width if align_right else 0.0, value_size * 0.91), value_size, fill, outline, outline_size, shadow_offset, shadow)
 	draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 
 
-func _draw_responsive_boost(visual_unit: float, label_size: int, outline_size: int, shadow_offset: Vector2) -> void:
+func _timer_opacity() -> float:
+	return _overlay_target_opacity(_timer_bounds())
+
+
+func _timer_bounds() -> Rect2:
+	var visual_unit := _hud_unit()
+	var label_size := _hud_label_size(visual_unit)
+	var value_size := _hud_time_size(visual_unit)
+	var outline_size := _hud_outline_size(visual_unit)
+	var shadow_offset := _hud_shadow_offset(visual_unit)
+	return _mock_stat_bounds(
+		"TIME",
+		_format_time_precise(run_time),
+		Vector2(visual_unit * 0.075, viewport_size.y - visual_unit * 0.28),
+		-0.10,
+		label_size,
+		value_size,
+		false,
+		outline_size,
+		shadow_offset
+	)
+
+
+func _score_bounds() -> Rect2:
+	var visual_unit := _hud_unit()
+	return _mock_stat_bounds(
+		"SCORE",
+		str(score),
+		Vector2(viewport_size.x - visual_unit * 0.09, _hud_top_safe_area() + visual_unit * 0.145),
+		-0.18,
+		_hud_label_size(visual_unit),
+		_hud_score_size(visual_unit),
+		true,
+		_hud_outline_size(visual_unit),
+		_hud_shadow_offset(visual_unit)
+	)
+
+
+func _combo_bounds() -> Rect2:
+	if combo <= 1:
+		return Rect2(Vector2(-10000.0, -10000.0), Vector2.ZERO)
+	var visual_unit := _hud_unit()
+	var text := "%dx COMBO" % combo
+	var font_size := maxi(15, roundi(float(_hud_label_size(visual_unit)) * 0.55))
+	var baseline := Vector2(viewport_size.x - visual_unit * 0.37, _hud_top_safe_area() + visual_unit * 0.34)
+	var width := font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1.0, font_size).x
+	return Rect2(Vector2(baseline.x - 5.0, baseline.y - font.get_ascent(font_size) - 5.0), Vector2(width + 10.0, font.get_height(font_size) + 10.0))
+
+
+func _mock_stat_bounds(label: String, value: String, origin: Vector2, rotation: float, label_size: int, value_size: int, align_right: bool, outline_size: int, shadow_offset: Vector2) -> Rect2:
+	var label_width := font.get_string_size(label, HORIZONTAL_ALIGNMENT_LEFT, -1.0, label_size).x
+	var value_width := font.get_string_size(value, HORIZONTAL_ALIGNMENT_LEFT, -1.0, value_size).x
+	var label_x := -label_width if align_right else 0.0
+	var value_x := -value_width if align_right else 0.0
+	var padding := float(outline_size) + maxf(shadow_offset.x, shadow_offset.y) + 3.0
+	var local_left := minf(label_x, value_x) - padding
+	var local_right := maxf(label_x + label_width, value_x + value_width) + padding
+	var value_baseline := float(value_size) * 0.91
+	var local_top := minf(-font.get_ascent(label_size), value_baseline - font.get_ascent(value_size)) - padding
+	var local_bottom := maxf(font.get_descent(label_size), value_baseline + font.get_descent(value_size)) + padding
+	return _transformed_rect_bounds(Rect2(Vector2(local_left, local_top), Vector2(local_right - local_left, local_bottom - local_top)), origin, rotation)
+
+
+func _transformed_rect_bounds(local_rect: Rect2, origin: Vector2, rotation: float) -> Rect2:
+	var transform := Transform2D(rotation, origin)
+	var corners := [
+		transform * local_rect.position,
+		transform * Vector2(local_rect.end.x, local_rect.position.y),
+		transform * local_rect.end,
+		transform * Vector2(local_rect.position.x, local_rect.end.y),
+	]
+	var minimum: Vector2 = corners[0]
+	var maximum: Vector2 = corners[0]
+	for corner in corners:
+		minimum = minimum.min(corner)
+		maximum = maximum.max(corner)
+	return Rect2(minimum, maximum - minimum)
+
+
+func _circle_intersects_rect(center: Vector2, radius: float, rect: Rect2) -> bool:
+	var closest := Vector2(
+		clampf(center.x, rect.position.x, rect.end.x),
+		clampf(center.y, rect.position.y, rect.end.y)
+	)
+	return center.distance_squared_to(closest) <= radius * radius
+
+
+func _draw_responsive_boost(visual_unit: float, label_size: int, outline_size: int, shadow_offset: Vector2, opacity: float) -> void:
 	var rotation := 0.20
-	var origin := Vector2(viewport_size.x - visual_unit * 0.07, viewport_size.y - visual_unit * 0.32)
-	var meter_width := clampf(visual_unit * 0.48, 160.0, 500.0)
-	var meter_height := clampf(visual_unit * 0.105, 36.0, 106.0)
+	var origin := Vector2(viewport_size.x - visual_unit * 0.065, viewport_size.y - visual_unit * 0.27)
+	var meter_width := clampf(visual_unit * 0.36, 135.0, 360.0)
+	var meter_height := clampf(visual_unit * 0.078, 30.0, 76.0)
 	draw_set_transform(origin, rotation, Vector2.ONE)
 	var label_width := font.get_string_size("BOOST", HORIZONTAL_ALIGNMENT_LEFT, -1.0, label_size).x
-	_draw_text_with_outline("BOOST", Vector2(-label_width, 0.0), label_size, DARK_MINT, WHITE, outline_size, shadow_offset, DARK_MINT)
+	_draw_text_with_outline("BOOST", Vector2(-label_width, 0.0), label_size, Color(DARK_MINT.r, DARK_MINT.g, DARK_MINT.b, opacity), Color(WHITE.r, WHITE.g, WHITE.b, opacity), outline_size, shadow_offset, Color(DARK_MINT.r, DARK_MINT.g, DARK_MINT.b, opacity))
 	var meter := Rect2(Vector2(-meter_width, meter_height * 0.34), Vector2(meter_width, meter_height))
-	_draw_pill(meter.grow(8.0), Color(WHITE.r, WHITE.g, WHITE.b, 0.28), Color.TRANSPARENT, 0.0)
-	_draw_pill(meter, Color(WHITE.r, WHITE.g, WHITE.b, 0.48), Color.TRANSPARENT, 0.0)
+	_draw_pill(meter.grow(6.0), Color(WHITE.r, WHITE.g, WHITE.b, 0.28 * opacity), Color.TRANSPARENT, 0.0)
+	_draw_pill(meter, Color(WHITE.r, WHITE.g, WHITE.b, 0.48 * opacity), Color.TRANSPARENT, 0.0)
 	var charge_rect := meter.grow(-6.0)
 	charge_rect.size.x *= boost_charge
 	if charge_rect.size.x > charge_rect.size.y:
-		_draw_pill(charge_rect, Color(LIME.r, LIME.g, LIME.b, 0.52), Color.TRANSPARENT, 0.0)
+		_draw_pill(charge_rect, Color(LIME.r, LIME.g, LIME.b, 0.52 * opacity), Color.TRANSPARENT, 0.0)
 	var space_size := roundi(meter_height * 0.58)
 	var space_text := "SPACE"
 	var space_width := font.get_string_size(space_text, HORIZONTAL_ALIGNMENT_LEFT, -1.0, space_size).x
-	_draw_text_with_outline(space_text, Vector2(meter.get_center().x - space_width * 0.5, meter.get_center().y + space_size * 0.34), space_size, WHITE, Color(WHITE.r, WHITE.g, WHITE.b, 0.01), 1, Vector2(5.0, 5.0), Color(DARK_MINT.r, DARK_MINT.g, DARK_MINT.b, 0.62))
+	_draw_text_with_outline(space_text, Vector2(meter.get_center().x - space_width * 0.5, meter.get_center().y + space_size * 0.34), space_size, Color(WHITE.r, WHITE.g, WHITE.b, opacity), Color(WHITE.r, WHITE.g, WHITE.b, 0.01 * opacity), 1, Vector2(4.0, 4.0), Color(DARK_MINT.r, DARK_MINT.g, DARK_MINT.b, 0.62 * opacity))
 	draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
+
+
+func _boost_bounds() -> Rect2:
+	var visual_unit := _hud_unit()
+	var label_size := _hud_label_size(visual_unit)
+	var origin := Vector2(viewport_size.x - visual_unit * 0.065, viewport_size.y - visual_unit * 0.27)
+	var meter_width := clampf(visual_unit * 0.36, 135.0, 360.0)
+	var meter_height := clampf(visual_unit * 0.078, 30.0, 76.0)
+	var label_width := font.get_string_size("BOOST", HORIZONTAL_ALIGNMENT_LEFT, -1.0, label_size).x
+	var local_rect := Rect2(
+		Vector2(-maxf(meter_width + 7.0, label_width + 5.0), -font.get_ascent(label_size) - 5.0),
+		Vector2(maxf(meter_width + 14.0, label_width + 12.0), font.get_ascent(label_size) + meter_height * 1.34 + 14.0)
+	)
+	return _transformed_rect_bounds(local_rect, origin, 0.20)
 
 
 func _draw_menu() -> void:
 	_draw_text_centered("PETRI", Vector2(viewport_size.x * 0.5, viewport_size.y * 0.25), int(clampf(viewport_size.y * 0.18, 92.0, 168.0)), DARK_MINT)
-	_draw_text_centered("ANTIBIOTIC SURVIVAL", Vector2(viewport_size.x * 0.5, viewport_size.y * 0.31), 18, ACCENT_MINT)
-	var labels := ["START RUN", "HOW TO PLAY", "SETTINGS"]
+	_draw_text_centered("EVERYONE FIGHTS. SOMEONE PROFITS.", Vector2(viewport_size.x * 0.5, viewport_size.y * 0.31), 18, ACCENT_MINT)
+	var labels := ["CULTURE WARS", "HOW TO PLAY", "SETTINGS"]
 	for i in labels.size(): _draw_action_button(_menu_button_rect(i), labels[i], i == 0)
 	_draw_text_centered("WASD  MOVE     MOUSE  AIM     LEFT CLICK  FIRE     SPACE  BOOST", Vector2(viewport_size.x * 0.5, viewport_size.y - 42.0), 15, DARK_MINT)
 
@@ -1406,6 +1904,7 @@ func _draw_how_to() -> void:
 	var panel := Rect2(Vector2(viewport_size.x * 0.5 - minf(470.0, viewport_size.x * 0.42), 142.0), Vector2(minf(940.0, viewport_size.x * 0.84), viewport_size.y - 262.0))
 	_draw_pill(panel, Color(1,1,1,0.88), MINT, 3.0)
 	var rows := [
+		["CULTURE WARS", "Germs are ragebait, not people. Arguments split and get louder."],
 		["W A S D", "Apply force. Momentum carries you through the dish."],
 		["MOUSE", "Aim the antibiotic particle."],
 		["LEFT CLICK", "Fire pellets — up to six per second."],
@@ -1418,7 +1917,7 @@ func _draw_how_to() -> void:
 		var y := panel.position.y + 56.0 + i * 47.0
 		_draw_text(str(rows[i][0]), Vector2(panel.position.x + 42.0, y), 19, PURPLE)
 		_draw_text(str(rows[i][1]), Vector2(panel.position.x + 230.0, y), 15, DARK_MINT)
-	_draw_text_centered("All item attacks damage germs and debris. Any hostile contact still ends the run.", Vector2(viewport_size.x * 0.5, panel.end.y - 30.0), 15, ORANGE_HOT)
+	_draw_text_centered("The discourse is the infection. Any hostile contact still ends the run.", Vector2(viewport_size.x * 0.5, panel.end.y - 30.0), 15, ORANGE_HOT)
 	_draw_action_button(_single_button_rect(), "BACK", false)
 
 
@@ -1431,7 +1930,7 @@ func _draw_pause() -> void:
 
 func _draw_game_over() -> void:
 	_draw_overlay_scrim()
-	_draw_text_centered("CULTURE LOST", Vector2(viewport_size.x * 0.5, viewport_size.y * 0.2), 56, WHITE)
+	_draw_text_centered("CULTURE WAR LOST", Vector2(viewport_size.x * 0.5, viewport_size.y * 0.2), 56, WHITE)
 	_draw_text_centered(death_reason.to_upper(), Vector2(viewport_size.x * 0.5, viewport_size.y * 0.26), 17, LIME)
 	var y := viewport_size.y * 0.36
 	_draw_text_centered("SCORE  %07d" % score, Vector2(viewport_size.x * 0.5, y), 35, WHITE)

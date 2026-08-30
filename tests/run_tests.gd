@@ -17,6 +17,8 @@ func _run_suite() -> void:
 	_test_persistence()
 	_test_collisions()
 	_test_resources_and_scene()
+	_test_culture_wars_dialogue()
+	_test_timer_occlusion()
 	_test_item_specs()
 	_test_elite_and_pickup_flow()
 	_test_item_selection_and_overcharge()
@@ -123,6 +125,151 @@ func _test_resources_and_scene() -> void:
 	_check(load("res://scenes/main.tscn") != null, "main scene loads")
 
 
+func _test_culture_wars_dialogue() -> void:
+	_check(CultureWarDialogue.topic_count() == 8, "Culture Wars covers eight recognizable discourse topics")
+	var content_complete := true
+	for topic_id in CultureWarDialogue.topic_count():
+		for variant in 2:
+			content_complete = content_complete and not CultureWarDialogue.regular_line(topic_id, -1, CultureWarDialogue.INTENSITY_OPENER, variant).is_empty()
+			for stance in 2:
+				content_complete = content_complete and not CultureWarDialogue.regular_line(topic_id, stance, CultureWarDialogue.INTENSITY_MEDIUM, variant).is_empty()
+				content_complete = content_complete and not CultureWarDialogue.regular_line(topic_id, stance, CultureWarDialogue.INTENSITY_SMALL, variant).is_empty()
+	_check(content_complete, "every topic has opener and opposing medium/small lines")
+	var lines_fit := true
+	for line in CultureWarDialogue.all_lines():
+		lines_fit = lines_fit and line.length() <= 54
+	_check(lines_fit, "dialogue copy stays within the compact two-line budget")
+	_check(CultureWarDialogue.ELITE_LINES.size() >= 4 and CultureWarDialogue.PLAYER_LINES.size() >= 5, "elite and protagonist voice pools have variety")
+
+	var game := _new_game()
+	game.call("_start_run")
+	_clear_combat(game)
+	game.call("_reset_dialogue")
+	var center := Vector2(game.get("arena_center"))
+	game.call("_spawn_germ", GermData.GermTier.LARGE, center + Vector2(120.0, 0.0))
+	var parent_index := _first_active_germ(game, GermData.GermTier.LARGE)
+	var parent_topic := int(Array(game.get("germs"))[parent_index].topic_id)
+	game.call("_damage_germ", parent_index, 3)
+	var medium_indices := _active_germ_indices(game, GermData.GermTier.MEDIUM)
+	var medium_stances := {}
+	var opposing_children_ok := medium_indices.size() == 2
+	var medium_child_speed_ok := true
+	var medium_spec: GermData = load("res://data/germ_medium.tres")
+	for index in medium_indices:
+		var germ: Dictionary = Array(game.get("germs"))[index]
+		opposing_children_ok = opposing_children_ok and int(germ.topic_id) == parent_topic
+		var child_speed := Vector2(germ.vel).length()
+		medium_child_speed_ok = medium_child_speed_ok and child_speed >= medium_spec.speed_min * 0.75 and child_speed <= medium_spec.speed_max * 0.75
+		medium_stances[int(germ.stance)] = true
+	opposing_children_ok = opposing_children_ok and medium_stances.has(0) and medium_stances.has(1)
+	_check(opposing_children_ok, "large germ splits into opposing stances on the same topic")
+	_check(medium_child_speed_ok, "large-germ descendants spawn at seventy-five percent velocity")
+	game.set("next_player_dialogue_time", INF)
+	game.call("_update_dialogue", 6.3)
+	var first_child_speaker := int(game.get("dialogue_germ_index"))
+	var first_child_stance := int(Array(game.get("germs"))[first_child_speaker].stance)
+	game.call("_update_dialogue", 6.3)
+	var second_child_speaker := int(game.get("dialogue_germ_index"))
+	var second_child_stance := int(Array(game.get("germs"))[second_child_speaker].stance)
+	_check(first_child_speaker in medium_indices and second_child_speaker in medium_indices and first_child_speaker != second_child_speaker and first_child_stance != second_child_stance, "opposing split descendants surface sequentially after the global cooldown")
+	game.call("_reset_dialogue")
+	var inherited_stance := int(Array(game.get("germs"))[medium_indices[0]].stance)
+	game.call("_damage_germ", medium_indices[0], 2)
+	var small_indices := _active_germ_indices(game, GermData.GermTier.SMALL)
+	var inherited_children_ok := small_indices.size() == 2
+	var small_child_speed_ok := true
+	var small_spec: GermData = load("res://data/germ_small.tres")
+	for index in small_indices:
+		var germ: Dictionary = Array(game.get("germs"))[index]
+		inherited_children_ok = inherited_children_ok and int(germ.topic_id) == parent_topic and int(germ.stance) == inherited_stance
+		var child_speed := Vector2(germ.vel).length()
+		small_child_speed_ok = small_child_speed_ok and child_speed >= small_spec.speed_min * 0.75 and child_speed <= small_spec.speed_max * 0.75
+	_check(inherited_children_ok, "small descendants inherit and intensify their parent's stance")
+	_check(small_child_speed_ok, "medium-germ descendants spawn at seventy-five percent velocity")
+
+	_clear_combat(game)
+	game.call("_reset_dialogue")
+	game.call("_spawn_germ", GermData.GermTier.SMALL, center + Vector2(80.0, 0.0), 0, 0)
+	var first_speaker := int(game.get("dialogue_germ_index"))
+	var first_text := String(game.get("dialogue_text"))
+	game.call("_spawn_germ", GermData.GermTier.SMALL, center + Vector2(-80.0, 0.0), 1, 1)
+	_check(int(game.get("dialogue_speaker")) == 1 and int(game.get("dialogue_germ_index")) == first_speaker and String(game.get("dialogue_text")) == first_text, "global dialogue channel prevents overlapping germ bubbles")
+	game.set("next_player_dialogue_time", float(game.get("run_time")))
+	game.call("_update_dialogue", 0.01)
+	_check(int(game.get("dialogue_speaker")) == 2 and float(game.get("dialogue_life")) > 3.0, "protagonist dialogue preempts germ chatter when due")
+	var paused_life := float(game.get("dialogue_life"))
+	game.call("_set_pause", true)
+	game.call("_process", 1.0)
+	_check(is_equal_approx(float(game.get("dialogue_life")), paused_life), "pause freezes dialogue timing")
+	game.call("_set_pause", false)
+	game.call("_reset_dialogue")
+	_clear_combat(game)
+	game.call("_spawn_germ", GermData.GermTier.SMALL, center + Vector2(70.0, 0.0), 0, 0)
+	var doomed_speaker := int(game.get("dialogue_germ_index"))
+	game.call("_damage_germ", doomed_speaker, 1)
+	_check(int(game.get("dialogue_speaker")) == 0 and String(game.get("dialogue_text")).is_empty(), "destroying a speaking germ clears its bubble")
+	game.call("_spawn_germ", GermData.GermTier.SMALL, center + Vector2(-70.0, 0.0), 0, 1)
+	_check(int(game.get("dialogue_speaker")) == 0, "germ dialogue observes the post-bubble cooldown")
+
+	var layouts_fit := true
+	for size in [Vector2(1280.0, 720.0), Vector2(1920.0, 1080.0), Vector2(2560.0, 1080.0), Vector2(900.0, 720.0)]:
+		game.set("viewport_size", size)
+		game.set("css_viewport_width", size.x)
+		game.set("arena_center", Vector2(size.x * 0.5, size.y * 0.46))
+		game.set("arena_radius", minf(size.y * 0.35, size.x * 0.34) * 1.3225)
+		var layout: Dictionary = game.call("_dialogue_layout", Vector2(game.get("arena_center")) + Vector2(-float(game.get("arena_radius")) + 24.0, -float(game.get("arena_radius")) + 24.0), "Culture war has one winner: the ruling class.", 18.0)
+		var rect: Rect2 = layout.rect
+		layouts_fit = layouts_fit and rect.position.x >= 11.99 and rect.position.y >= (76.0 if size.x < 1024.0 else 0.0) and rect.end.x <= size.x - 11.99 and rect.end.y <= size.y - 15.99 and Array(layout.lines).size() <= 2 and is_zero_approx(float(game.call("_dialogue_hud_overlap", rect)))
+		for rendered_line in Array(layout.lines):
+			layouts_fit = layouts_fit and not str(rendered_line).contains("…")
+	_check(layouts_fit, "speech bubble layout avoids the HUD across desktop and compact viewports")
+	_free_game(game)
+
+
+func _test_timer_occlusion() -> void:
+	var game := _new_game()
+	game.call("_start_run")
+	_clear_combat(game)
+	game.call("_update_layout")
+	var visual_unit := float(game.call("_hud_unit"))
+	var previous_label_size := roundi(clampf(visual_unit * 0.063, 20.0, 76.0))
+	var previous_score_size := roundi(clampf(visual_unit * 0.125, 42.0, 178.0))
+	var previous_time_size := roundi(clampf(visual_unit * 0.14, 40.0, 132.0))
+	_check(int(game.call("_hud_label_size", visual_unit)) <= previous_label_size * 0.8 and int(game.call("_hud_score_size", visual_unit)) <= previous_score_size * 0.8 and int(game.call("_hud_time_size", visual_unit)) <= previous_time_size * 0.8, "gameplay HUD typography uses the reduced scale")
+	var timer_bounds: Rect2 = game.call("_timer_bounds")
+	game.set("player_pos", Vector2(game.get("arena_center")))
+	_check(is_equal_approx(float(game.call("_timer_opacity")), 1.0), "timer remains opaque when actors do not overlap it")
+	game.set("player_pos", timer_bounds.get_center())
+	_check(is_equal_approx(float(game.call("_timer_opacity")), 0.15), "timer fades to fifteen percent over the player")
+	game.set("timer_hud_opacity", 1.0)
+	game.call("_update_overlay_opacities", 0.1)
+	_check(float(game.get("timer_hud_opacity")) > 0.15 and float(game.get("timer_hud_opacity")) < 1.0, "HUD obstruction opacity transitions instead of snapping")
+	game.call("_update_overlay_opacities", 0.2)
+	_check(is_equal_approx(float(game.get("timer_hud_opacity")), 0.15), "HUD obstruction transition reaches its reduced opacity")
+	game.set("player_pos", Vector2(game.get("arena_center")))
+	game.call("_spawn_germ", GermData.GermTier.SMALL, timer_bounds.get_center(), 0, 0)
+	_check(is_equal_approx(float(game.call("_timer_opacity")), 0.15), "timer fades to fifteen percent over a germ")
+	_clear_combat(game)
+	game.set("player_pos", Rect2(game.call("_score_bounds")).get_center())
+	game.set("score_hud_opacity", 1.0)
+	game.call("_update_overlay_opacities", 0.3)
+	_check(is_equal_approx(float(game.get("score_hud_opacity")), 0.15), "score HUD shares the actor-obstruction fade")
+	game.set("player_pos", Vector2(game.get("arena_center")))
+	Array(game.get("popups")).clear()
+	Array(game.get("popups")).append({"pos": Vector2(game.get("player_pos")), "text": "+100   2x", "life": 5.0, "duration": 5.0, "item_type": -1, "occlusion_opacity": 1.0})
+	game.call("_update_popups", 0.3)
+	_check(is_equal_approx(float(Array(game.get("popups"))[0].occlusion_opacity), 0.28), "floating score multipliers fade over actors")
+	Array(game.get("popups")).clear()
+	game.call("_show_dialogue", 2, -1, "Every outrage has a sponsor.", 3.2)
+	var bubble_layout: Dictionary = game.call("_dialogue_layout", Vector2(game.get("player_pos")), "Every outrage has a sponsor.", 18.0)
+	game.call("_spawn_germ", GermData.GermTier.SMALL, Rect2(bubble_layout.rect).get_center(), 0, 0)
+	game.call("_show_dialogue", 2, -1, "Every outrage has a sponsor.", 3.2)
+	game.set("dialogue_occlusion_opacity", 1.0)
+	game.call("_update_overlay_opacities", 0.3)
+	_check(is_equal_approx(float(game.get("dialogue_occlusion_opacity")), 0.28), "speech bubbles fade when another actor is behind them")
+	_free_game(game)
+
+
 func _test_item_specs() -> void:
 	_check(ItemData.ItemType.size() == 6 and ItemData.MAX_LEVEL == 3, "six item types with level-three cap")
 	_check(ItemData.hitter_count(1) == 1 and ItemData.hitter_count(4) == 4, "spinning hitter count curve")
@@ -144,8 +291,8 @@ func _test_elite_and_pickup_flow() -> void:
 	for warning in Array(game.get("spawn_warnings")):
 		if int(warning.tier) == GermData.GermTier.ELITE: elite_warnings += 1
 	_check(elite_warnings == 1 and is_equal_approx(float(game.get("elite_timer")), 30.0), "elite queues at scheduled cadence")
-	_check(is_equal_approx(float(Array(game.get("spawn_warnings"))[0].duration), 1.02), "germ entry aura lasts twenty percent longer")
-	game.call("_update_spawn_warnings", 1.03)
+	_check(is_equal_approx(float(Array(game.get("spawn_warnings"))[0].duration), 2.5), "germ entry aura uses the configured duration")
+	game.call("_update_spawn_warnings", 2.501)
 	var germ_pool: Array = game.get("germs")
 	_check(bool(germ_pool[GameMath.MAX_REGULAR_GERMS].active) and int(germ_pool[GameMath.MAX_REGULAR_GERMS].hp) == 18, "elite uses reserved germ slot")
 	game.set("score", 0)
@@ -295,7 +442,7 @@ func _test_long_run_pool_stability() -> void:
 	for germ in early_germs:
 		if bool(germ.active): early_active += 1
 	_check(early_active == 0 and Array(game.get("spawn_warnings")).size() == 5, "spawn aura appears before germ activation")
-	game.call("_update_run", 0.7)
+	game.call("_update_run", 2.11)
 	var entered_active := 0
 	for germ in early_germs:
 		if bool(germ.active): entered_active += 1
@@ -327,6 +474,23 @@ func _count_nodes(node: Node) -> int:
 	for child in node.get_children():
 		count += _count_nodes(child)
 	return count
+
+
+func _first_active_germ(game: Node, tier: int) -> int:
+	for i in Array(game.get("germs")).size():
+		var germ: Dictionary = Array(game.get("germs"))[i]
+		if bool(germ.active) and int(germ.tier) == tier:
+			return i
+	return -1
+
+
+func _active_germ_indices(game: Node, tier: int) -> Array[int]:
+	var indices: Array[int] = []
+	for i in Array(game.get("germs")).size():
+		var germ: Dictionary = Array(game.get("germs"))[i]
+		if bool(germ.active) and int(germ.tier) == tier:
+			indices.append(i)
+	return indices
 
 
 func _new_game() -> Node:
