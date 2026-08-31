@@ -5,10 +5,28 @@ const BOOST_DRAIN_SECONDS := 2.0
 const BOOST_RECHARGE_DELAY := 0.5
 const BOOST_RECHARGE_SECONDS := 3.0
 const MAX_REGULAR_GERMS := 35
-const MAX_GERMS := 36
+const ELITE_GERM_INDEX := MAX_REGULAR_GERMS
+const BOSS_GERM_INDEX := MAX_REGULAR_GERMS + 1
+const MAX_GERMS := 37
 const MAX_FRAGMENTS := 80
+const BASE_PLAYER_FIRE_RATE := 6.0
+const OVERCLOCKED_PLAYER_FIRE_RATE := 9.0
 const ELITE_FIRST_SPAWN := 10.0
-const ELITE_SPAWN_INTERVAL := 10.0
+const ELITE_SPAWN_INTERVAL := 15.0
+const BOSS_SCORE_THRESHOLD := 50000
+const BOSS_2_SCORE_THRESHOLD := 100000
+const BOSS_INITIAL_DASH_DELAY := 2.5
+const BOSS_DASH_WARNING_SECONDS := 0.9
+const BOSS_DASH_SECONDS := 0.6
+const BOSS_DASH_SPEED := 420.0
+const BOSS_DASH_COOLDOWN := 3.0
+const BOSS_VOLLEY_INITIAL_DELAY := 4.5
+const BOSS_VOLLEY_WARNING_SECONDS := 0.9
+const BOSS_VOLLEY_COOLDOWN := 6.0
+const BOSS_VOLLEY_COUNT := 10
+const BOSS_VOLLEY_SPEED := 220.0
+const BOSS_VOLLEY_LIFETIME := 6.0
+const BOSS_VOLLEY_BOUNCES := 1
 
 static func update_boost(charge: float, delay_left: float, boosting: bool, delta: float) -> Dictionary:
 	var next_charge := charge
@@ -56,6 +74,10 @@ static func split_result(tier: int) -> Dictionary:
 			return {"child_tier": -1, "children": 0, "fragments": 1}
 		GermData.GermTier.ELITE:
 			return {"child_tier": -1, "children": 0, "fragments": 4}
+		GermData.GermTier.BOSS:
+			return {"child_tier": -1, "children": 0, "fragments": 0}
+		GermData.GermTier.BOSS_2:
+			return {"child_tier": -1, "children": 0, "fragments": 0}
 	return {"child_tier": -1, "children": 0, "fragments": 0}
 
 

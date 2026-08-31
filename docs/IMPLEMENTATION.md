@@ -23,10 +23,19 @@ Target compositions are 1280×720, 1920×1080, and 2560×1080.
 - Germ spawn telegraph: 2.5 s pulsing aura before activation
 - Split descendants spawn at 75% of their tier's normal velocity
 - Item drop telegraph: 0.85 s item-specific aura before pickup activation
+- Tank elites: first at 10 s, then every 15 s
+- Boss threshold: 50,000 points; spawning pauses until all active germs and debris are gone
+- Boss: radius 88, 240 HP, speed 32–44, 5,000 base score, no split or debris
+- Boss dash: 2.5 s initial delay, 0.9 s direction-lock tell, 0.6 s at 420 px/s, 3 s cooldown
+- Boss reward: reset all item state and grant 2-damage player pellets for the remainder of the run
+- Second boss threshold: 100,000 points, using the same clear-dish entry gate and reserved boss slot
+- Second boss: radius 100, 600 HP, speed 36–48, 10,000 base score, no split or death debris
+- Second-boss volley: first available after 4.5 s of chase time; 0.9 s tell; ten debris at 220 px/s, 6 s lifetime, and one bounce; 6 s cooldown
+- Second boss reward: clear volley debris, reset all item state, retain 2-damage pellets, and increase the player fire rate from 6 to 9 volleys/s
 
 ## Elite items
 
-- Tank elite: first at 20 s, then every 30 s; radius 66, 18 HP, speed 38–58, 600 score, four debris, no split
+- Tank elite: first at 10 s, then every 15 s; radius 66, 18 HP, speed 38–58, 600 score, four debris, no split
 - Item aura: 0.85 s; pickup lifetime: 15 s; pickup radius: 18
 - Permanent item cap: level 3; all-max drops grant one random 15 s level-four overcharge
 - Spinning hitter: 1–4 orbiters at radius 58 and 2.8 rad/s
@@ -35,7 +44,7 @@ Target compositions are 1280×720, 1920×1080, and 2560×1080.
 - Ricochet: 1–4 membrane bounces with 1.6–2.65 s projectile lifetimes
 - Spread: 3/5/7/9 pellets at symmetric 12° steps
 - Leave-behinds: 1.4/1.1/0.85/0.6 s mine cadence; 55 radius or 70 while overcharged
-- Fixed pools: 36 germs, 80 debris, 240 projectiles, 3 turrets, 48 mines, and 4 pickup/aura slots
+- Fixed pools: 37 germs (35 regular, one elite, one shared milestone-boss slot), 80 debris, 240 projectiles, 3 turrets, 48 mines, and 4 pickup/aura slots
 
 ## Figma handoff
 

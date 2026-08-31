@@ -14,6 +14,9 @@ enum AppState { MENU, HOW_TO, PLAYING, PAUSED, SETTINGS, GAME_OVER }
 enum ProjectileOwner { PLAYER, TURRET }
 enum DialogueSpeaker { NONE, GERM, PLAYER }
 enum DialogueCutscenePhase { NONE, ZOOM_IN, TALKING, ZOOM_OUT }
+enum BossEncounterPhase { INACTIVE, CLEANUP, WARNING, ACTIVE, COMPLETED }
+enum BossDashPhase { CHASE, WARNING, DASH, VOLLEY_WARNING }
+enum DebrisSource { REGULAR, BOSS_VOLLEY }
 
 const BG := Color("#D7FFF8")
 const MINT := Color("#B2DBD5")
@@ -30,6 +33,10 @@ const LIME_DARK := Color("#A9C375")
 const CYAN := Color("#55DDE0")
 const PURPLE_SOFT := Color("#EFCEFD")
 const PURPLE := Color("#77408E")
+const BOSS_FILL := Color("#5D2E6E")
+const BOSS_CORE := Color("#3C2049")
+const BOSS_2_FILL := Color("#321A3C")
+const BOSS_2_CORE := Color("#FF6B6B")
 
 const PLAYER_RADIUS := 18.0
 const BASE_ACCEL := 360.0
@@ -37,7 +44,6 @@ const BASE_MAX_SPEED := 190.0
 const DRAG := 105.0
 const BOOST_ACCEL_MULT := 1.8
 const BOOST_SPEED_MULT := 1.5
-const FIRE_INTERVAL := 1.0 / 6.0
 const PELLET_SPEED := 520.0
 const PELLET_LIFETIME := 1.25
 const SPAWN_PROTECTION := 1.5
@@ -89,6 +95,8 @@ var germ_specs: Array[GermData] = [
 	preload("res://data/germ_medium.tres"),
 	preload("res://data/germ_small.tres"),
 	preload("res://data/germ_elite.tres"),
+	preload("res://data/germ_boss.tres"),
+	preload("res://data/germ_boss_2.tres"),
 ]
 
 @onready var audio: PetriAudio = $AudioManager
@@ -129,6 +137,11 @@ var aoe_flash_left := 0.0
 var mine_timer := INF
 var overcharge_item := -1
 var overcharge_left := 0.0
+var boss_encounter_phase := BossEncounterPhase.INACTIVE
+var bosses_defeated := 0
+var active_boss_stage := -1
+var base_weapon_damage := 1
+var base_weapon_fire_rate := GameMath.BASE_PLAYER_FIRE_RATE
 
 var pellets: Array[Dictionary] = []
 var germs: Array[Dictionary] = []
@@ -175,11 +188,11 @@ func _ready() -> void:
 
 func _create_pools() -> void:
 	for i in PELLET_POOL_SIZE:
-		pellets.append({"active": false, "pos": Vector2.ZERO, "vel": Vector2.ZERO, "life": 0.0, "bounces": 0, "owner": ProjectileOwner.PLAYER})
+		pellets.append({"active": false, "pos": Vector2.ZERO, "vel": Vector2.ZERO, "life": 0.0, "bounces": 0, "owner": ProjectileOwner.PLAYER, "damage": 1})
 	for i in GameMath.MAX_GERMS:
-		germs.append({"active": false, "tier": GermData.GermTier.LARGE, "pos": Vector2.ZERO, "vel": Vector2.ZERO, "hp": 0, "phase": 0.0, "hitter_cooldown": 0.0, "topic_id": -1, "stance": -1})
+		germs.append({"active": false, "tier": GermData.GermTier.LARGE, "pos": Vector2.ZERO, "vel": Vector2.ZERO, "move_speed": 0.0, "hp": 0, "phase": 0.0, "hitter_cooldown": 0.0, "topic_id": -1, "stance": -1, "dash_phase": BossDashPhase.CHASE, "dash_timer": INF, "dash_direction": Vector2.ZERO, "volley_timer": INF, "volley_rotation": 0.0})
 	for i in GameMath.MAX_FRAGMENTS:
-		debris.append({"active": false, "pos": Vector2.ZERO, "vel": Vector2.ZERO, "life": 0.0, "angle": 0.0, "spin": 0.0, "hitter_cooldown": 0.0})
+		debris.append({"active": false, "pos": Vector2.ZERO, "vel": Vector2.ZERO, "life": 0.0, "angle": 0.0, "spin": 0.0, "hitter_cooldown": 0.0, "source": DebrisSource.REGULAR, "bounces": -1})
 	for i in TURRET_POOL_SIZE:
 		turrets.append({"active": false, "pos": Vector2.ZERO, "cooldown": 0.0, "angle": 0.0})
 	for i in MINE_POOL_SIZE:
@@ -271,21 +284,23 @@ func _update_run(delta: float) -> void:
 	_update_aoe(delta)
 	_resolve_projectile_hits()
 	_resolve_hostile_hits()
+	_update_boss_encounter()
 
 	if combo > 1 and run_time - last_kill_time > 2.0:
 		combo = 1
 		emit_signal("combo_changed", combo)
 
-	spawn_timer -= delta
-	if spawn_timer <= 0.0 and _active_regular_germ_count() + _pending_regular_germ_count() < GameMath.active_germ_cap(run_time):
-		_queue_spawn_warning(_weighted_spawn_tier())
-		spawn_timer = GameMath.spawn_interval(run_time)
+	if _normal_spawning_enabled():
+		spawn_timer -= delta
+		if spawn_timer <= 0.0 and _active_regular_germ_count() + _pending_regular_germ_count() < GameMath.active_germ_cap(run_time):
+			_queue_spawn_warning(_weighted_spawn_tier())
+			spawn_timer = GameMath.spawn_interval(run_time)
 
-	elite_timer -= delta
-	if elite_timer <= 0.0 and not _elite_exists():
-		_queue_spawn_warning(GermData.GermTier.ELITE)
-		elite_timer = GameMath.ELITE_SPAWN_INTERVAL
-		audio.play_sfx("elite_spawn")
+		elite_timer -= delta
+		if elite_timer <= 0.0 and not _elite_exists():
+			_queue_spawn_warning(GermData.GermTier.ELITE)
+			elite_timer = GameMath.ELITE_SPAWN_INTERVAL
+			audio.play_sfx("elite_spawn")
 
 
 func _resolve_player_membrane() -> void:
@@ -317,7 +332,8 @@ func _fire_pellet() -> void:
 		ItemData.ricochet_lifetime(ricochet_level),
 		ItemData.ricochet_bounces(ricochet_level),
 		ProjectileOwner.PLAYER,
-		player_velocity * 0.22
+		player_velocity * 0.22,
+		_player_projectile_damage()
 	)
 	if not center_spawned:
 		return
@@ -330,13 +346,22 @@ func _fire_pellet() -> void:
 			ItemData.ricochet_lifetime(ricochet_level),
 			ItemData.ricochet_bounces(ricochet_level),
 			ProjectileOwner.PLAYER,
-			player_velocity * 0.22
+			player_velocity * 0.22,
+			_player_projectile_damage()
 		)
-	fire_cooldown = FIRE_INTERVAL
+	fire_cooldown = _player_fire_interval()
 	audio.play_sfx("fire")
 
 
-func _spawn_projectile(at: Vector2, direction: Vector2, speed: float, life: float, bounces: int, owner: int, inherited_velocity: Vector2 = Vector2.ZERO) -> bool:
+func _player_projectile_damage() -> int:
+	return base_weapon_damage
+
+
+func _player_fire_interval() -> float:
+	return 1.0 / maxf(base_weapon_fire_rate, 0.001)
+
+
+func _spawn_projectile(at: Vector2, direction: Vector2, speed: float, life: float, bounces: int, owner: int, inherited_velocity: Vector2 = Vector2.ZERO, damage: int = 1) -> bool:
 	for i in pellets.size():
 		if bool(pellets[i].active):
 			continue
@@ -347,6 +372,7 @@ func _spawn_projectile(at: Vector2, direction: Vector2, speed: float, life: floa
 			"life": life,
 			"bounces": bounces,
 			"owner": owner,
+			"damage": damage,
 		}
 		return true
 	return false
@@ -380,19 +406,103 @@ func _update_germs(delta: float) -> void:
 			continue
 		var g := germs[i]
 		g.hitter_cooldown = maxf(0.0, float(g.hitter_cooldown) - delta)
-		var target_dir := (player_pos - Vector2(g.pos)).normalized()
-		var current_speed := Vector2(g.vel).length()
-		var wanted := target_dir * current_speed
-		g.vel = Vector2(g.vel).lerp(wanted, minf(1.0, delta * 0.18))
-		g.pos += Vector2(g.vel) * speed_mult * delta
+		if _is_boss_tier(int(g.tier)):
+			g = _update_boss_movement(g, delta)
+		else:
+			var target_dir := (player_pos - Vector2(g.pos)).normalized()
+			var current_speed := Vector2(g.vel).length()
+			var wanted := target_dir * current_speed
+			g.vel = Vector2(g.vel).lerp(wanted, minf(1.0, delta * 0.18))
+			g.pos += Vector2(g.vel) * speed_mult * delta
 		g.phase = float(g.phase) + delta
 		var spec := germ_specs[int(g.tier)]
 		var edge := Vector2(g.pos) - arena_center
 		if edge.length() + spec.radius > arena_radius:
 			var normal := edge.normalized()
 			g.pos = arena_center + normal * (arena_radius - spec.radius)
-			g.vel = Vector2(g.vel).bounce(normal)
+			if _is_boss_tier(int(g.tier)) and int(g.dash_phase) == BossDashPhase.DASH:
+				g.dash_phase = BossDashPhase.CHASE
+				g.dash_timer = GameMath.BOSS_DASH_COOLDOWN
+				g.vel = -normal * float(g.move_speed)
+			else:
+				g.vel = Vector2(g.vel).bounce(normal)
 		germs[i] = g
+
+
+func _is_boss_tier(tier: int) -> bool:
+	return tier == GermData.GermTier.BOSS or tier == GermData.GermTier.BOSS_2
+
+
+func _update_boss_movement(germ: Dictionary, delta: float) -> Dictionary:
+	var g := germ
+	match int(g.dash_phase):
+		BossDashPhase.WARNING:
+			g.vel = Vector2.ZERO
+			g.dash_timer = float(g.dash_timer) - delta
+			if float(g.dash_timer) <= 0.0:
+				g.dash_phase = BossDashPhase.DASH
+				g.dash_timer = GameMath.BOSS_DASH_SECONDS
+				g.vel = Vector2(g.dash_direction) * GameMath.BOSS_DASH_SPEED
+		BossDashPhase.DASH:
+			g.pos += Vector2(g.dash_direction) * GameMath.BOSS_DASH_SPEED * delta
+			g.dash_timer = float(g.dash_timer) - delta
+			if float(g.dash_timer) <= 0.0:
+				g.dash_phase = BossDashPhase.CHASE
+				g.dash_timer = GameMath.BOSS_DASH_COOLDOWN
+				g.vel = Vector2(g.dash_direction) * float(g.move_speed)
+		BossDashPhase.VOLLEY_WARNING:
+			g.vel = Vector2.ZERO
+			g.volley_timer = float(g.volley_timer) - delta
+			if float(g.volley_timer) <= 0.0:
+				_spawn_boss_volley(Vector2(g.pos), float(g.volley_rotation))
+				g.dash_phase = BossDashPhase.CHASE
+				g.volley_timer = GameMath.BOSS_VOLLEY_COOLDOWN
+		_:
+			g.dash_timer = float(g.dash_timer) - delta
+			if int(g.tier) == GermData.GermTier.BOSS_2:
+				g.volley_timer = float(g.volley_timer) - delta
+			var target_dir := (player_pos - Vector2(g.pos)).normalized()
+			var wanted := target_dir * float(g.move_speed)
+			g.vel = Vector2(g.vel).lerp(wanted, minf(1.0, delta * 0.7))
+			g.pos += Vector2(g.vel) * delta
+			if float(g.dash_timer) <= 0.0:
+				g.dash_phase = BossDashPhase.WARNING
+				g.dash_timer = GameMath.BOSS_DASH_WARNING_SECONDS
+				g.dash_direction = target_dir
+				g.vel = Vector2.ZERO
+			elif int(g.tier) == GermData.GermTier.BOSS_2 and float(g.volley_timer) <= 0.0:
+				g.dash_phase = BossDashPhase.VOLLEY_WARNING
+				g.volley_timer = GameMath.BOSS_VOLLEY_WARNING_SECONDS
+				g.volley_rotation = rng.randf_range(0.0, TAU)
+				g.vel = Vector2.ZERO
+	return g
+
+
+func _spawn_boss_volley(at: Vector2, rotation: float) -> void:
+	var spawn_radius := germ_specs[GermData.GermTier.BOSS_2].radius + 12.0
+	for shot in GameMath.BOSS_VOLLEY_COUNT:
+		var angle := rotation + TAU * float(shot) / float(GameMath.BOSS_VOLLEY_COUNT)
+		var direction := Vector2.RIGHT.rotated(angle)
+		var spawn_position := at + direction * spawn_radius
+		var from_center := spawn_position - arena_center
+		if from_center.length() + 10.0 > arena_radius:
+			spawn_position = arena_center + from_center.normalized() * (arena_radius - 10.0)
+		for i in debris.size():
+			if bool(debris[i].active):
+				continue
+			debris[i] = {
+				"active": true,
+				"pos": spawn_position,
+				"vel": direction * GameMath.BOSS_VOLLEY_SPEED,
+				"life": GameMath.BOSS_VOLLEY_LIFETIME,
+				"angle": angle,
+				"spin": rng.randf_range(-6.0, 6.0),
+				"hitter_cooldown": 0.0,
+				"source": DebrisSource.BOSS_VOLLEY,
+				"bounces": GameMath.BOSS_VOLLEY_BOUNCES,
+			}
+			break
+	audio.play_sfx("mine")
 
 
 func _update_debris(delta: float) -> void:
@@ -406,9 +516,15 @@ func _update_debris(delta: float) -> void:
 		d.life = float(d.life) - delta
 		var edge := Vector2(d.pos) - arena_center
 		if edge.length() + 10.0 > arena_radius:
-			var normal := edge.normalized()
-			d.pos = arena_center + normal * (arena_radius - 10.0)
-			d.vel = Vector2(d.vel).bounce(normal) * 0.82
+			var remaining_bounces := int(d.get("bounces", -1))
+			if remaining_bounces == 0:
+				d.active = false
+			else:
+				var normal := edge.normalized()
+				d.pos = arena_center + normal * (arena_radius - 10.0)
+				d.vel = Vector2(d.vel).bounce(normal) * 0.82
+				if remaining_bounces > 0:
+					d.bounces = remaining_bounces - 1
 		if float(d.life) <= 0.0:
 			d.active = false
 		debris[i] = d
@@ -426,7 +542,7 @@ func _resolve_projectile_hits() -> void:
 			var spec := germ_specs[int(germs[gi].tier)]
 			if pellet_pos.distance_squared_to(Vector2(germs[gi].pos)) <= pow(spec.radius + 5.0, 2.0):
 				pellets[pi].active = false
-				_damage_germ(gi, 1)
+				_damage_germ(gi, int(pellets[pi].get("damage", 1)))
 				hit = true
 				break
 		if hit:
@@ -618,9 +734,10 @@ func _update_aoe(delta: float) -> void:
 	aoe_warning_active = aoe_timer <= AOE_WARNING_SECONDS
 	if aoe_timer <= 0.0:
 		_damage_area(player_pos, ItemData.aoe_radius(level), 1)
-		aoe_timer = ItemData.aoe_interval(level)
+		var remaining_level := _effective_item_level(ItemData.ItemType.AOE)
+		aoe_timer = ItemData.aoe_interval(remaining_level)
 		aoe_warning_active = false
-		aoe_flash_left = 0.22
+		aoe_flash_left = 0.22 if remaining_level > 0 else 0.0
 		audio.play_sfx("aoe")
 
 
@@ -641,8 +758,14 @@ func _resolve_hostile_hits() -> void:
 
 
 func _spawn_germ(tier: int, position_override: Variant = null, topic_override: int = -1, stance_override: int = -1, dialogue_priority: bool = false, speed_multiplier: float = 1.0) -> bool:
-	var first_index := GameMath.MAX_REGULAR_GERMS if tier == GermData.GermTier.ELITE else 0
-	var end_index := GameMath.MAX_GERMS if tier == GermData.GermTier.ELITE else GameMath.MAX_REGULAR_GERMS
+	var first_index := 0
+	var end_index := GameMath.MAX_REGULAR_GERMS
+	if tier == GermData.GermTier.ELITE:
+		first_index = GameMath.ELITE_GERM_INDEX
+		end_index = GameMath.ELITE_GERM_INDEX + 1
+	elif _is_boss_tier(tier):
+		first_index = GameMath.BOSS_GERM_INDEX
+		end_index = GameMath.BOSS_GERM_INDEX + 1
 	for i in range(first_index, end_index):
 		if bool(germs[i].active):
 			continue
@@ -655,12 +778,14 @@ func _spawn_germ(tier: int, position_override: Variant = null, topic_override: i
 		var direction := (player_pos - at).normalized().rotated(rng.randf_range(-0.5, 0.5))
 		var topic_id := -1
 		var stance := -1
-		if tier != GermData.GermTier.ELITE:
+		if tier <= GermData.GermTier.SMALL:
 			topic_id = topic_override if topic_override >= 0 else rng.randi_range(0, CULTURE_WAR_DIALOGUE.topic_count() - 1)
 			if tier != GermData.GermTier.LARGE:
 				stance = stance_override if stance_override >= 0 else rng.randi_range(CULTURE_WAR_DIALOGUE.STANCE_A, CULTURE_WAR_DIALOGUE.STANCE_B)
-		germs[i] = {"active": true, "tier": tier, "pos": at, "vel": direction * speed, "hp": spec.hp, "phase": rng.randf_range(0.0, TAU), "hitter_cooldown": 0.0, "topic_id": topic_id, "stance": stance}
-		_try_show_germ_dialogue(i, dialogue_priority or tier == GermData.GermTier.LARGE or tier == GermData.GermTier.ELITE)
+		germs[i] = {"active": true, "tier": tier, "pos": at, "vel": direction * speed, "move_speed": speed, "hp": spec.hp, "phase": rng.randf_range(0.0, TAU), "hitter_cooldown": 0.0, "topic_id": topic_id, "stance": stance, "dash_phase": BossDashPhase.CHASE, "dash_timer": GameMath.BOSS_INITIAL_DASH_DELAY if _is_boss_tier(tier) else INF, "dash_direction": Vector2.ZERO, "volley_timer": GameMath.BOSS_VOLLEY_INITIAL_DELAY if tier == GermData.GermTier.BOSS_2 else INF, "volley_rotation": 0.0}
+		if _is_boss_tier(tier):
+			boss_encounter_phase = BossEncounterPhase.ACTIVE
+		_try_show_germ_dialogue(i, dialogue_priority or tier == GermData.GermTier.LARGE or tier == GermData.GermTier.ELITE or _is_boss_tier(tier))
 		return true
 	return false
 
@@ -836,6 +961,8 @@ func _spawn_debris(at: Vector2, count: int) -> void:
 			"angle": angle,
 			"spin": rng.randf_range(-4.5, 4.5),
 			"hitter_cooldown": 0.0,
+			"source": DebrisSource.REGULAR,
+			"bounces": -1,
 		}
 		made += 1
 		if made >= count:
@@ -861,6 +988,8 @@ func _destroy_germ(index: int) -> void:
 	_spawn_debris(at, int(split.fragments))
 	if tier == GermData.GermTier.ELITE:
 		_queue_item_warning(at)
+	elif _is_boss_tier(tier):
+		_complete_boss_encounter()
 	audio.play_sfx("split")
 	if not bool(saved.reduced_motion):
 		screen_shake = maxf(screen_shake, 0.34)
@@ -874,6 +1003,100 @@ func _award_kill(base: int, at: Vector2) -> void:
 	popups.append({"pos": at, "text": "+%d%s" % [points, "   %dx" % combo if combo > 1 else ""], "life": 0.8, "duration": 0.8, "item_type": -1, "occlusion_opacity": 1.0})
 	emit_signal("score_changed", score)
 	emit_signal("combo_changed", combo)
+	_try_begin_next_boss_encounter()
+
+
+func _begin_boss_cleanup() -> void:
+	active_boss_stage = bosses_defeated
+	boss_encounter_phase = BossEncounterPhase.CLEANUP
+	spawn_warnings.clear()
+	popups.append({"pos": player_pos, "text": "%s  //  CLEAR THE DISH" % _format_score_threshold(_boss_threshold_for_stage(active_boss_stage)), "life": 1.8, "duration": 1.8, "item_type": -1, "occlusion_opacity": 1.0, "color": ORANGE_HOT})
+	audio.play_sfx("elite_spawn")
+
+
+func _try_begin_next_boss_encounter() -> void:
+	if boss_encounter_phase != BossEncounterPhase.INACTIVE or bosses_defeated >= 2:
+		return
+	if score >= _boss_threshold_for_stage(bosses_defeated):
+		_begin_boss_cleanup()
+
+
+func _boss_threshold_for_stage(stage: int) -> int:
+	return GameMath.BOSS_2_SCORE_THRESHOLD if stage == 1 else GameMath.BOSS_SCORE_THRESHOLD
+
+
+func _boss_tier_for_stage(stage: int) -> int:
+	return GermData.GermTier.BOSS_2 if stage == 1 else GermData.GermTier.BOSS
+
+
+func _format_score_threshold(value: int) -> String:
+	return "%d,%03d" % [value / 1000, value % 1000]
+
+
+func _update_boss_encounter() -> void:
+	if boss_encounter_phase != BossEncounterPhase.CLEANUP:
+		return
+	if _active_germ_count() > 0 or _active_debris_count() > 0:
+		return
+	boss_encounter_phase = BossEncounterPhase.WARNING
+	_queue_spawn_warning(_boss_tier_for_stage(active_boss_stage))
+	audio.play_sfx("elite_spawn")
+
+
+func _complete_boss_encounter() -> void:
+	var completed_stage := active_boss_stage
+	_reset_abilities_for_boss_reward()
+	if completed_stage == 0:
+		base_weapon_damage = 2
+		base_weapon_fire_rate = GameMath.BASE_PLAYER_FIRE_RATE
+	elif completed_stage == 1:
+		_clear_boss_volley_debris()
+		base_weapon_damage = 2
+		base_weapon_fire_rate = GameMath.OVERCLOCKED_PLAYER_FIRE_RATE
+	fire_cooldown = minf(fire_cooldown, _player_fire_interval())
+	bosses_defeated = maxi(bosses_defeated, completed_stage + 1)
+	active_boss_stage = -1
+	boss_encounter_phase = BossEncounterPhase.COMPLETED if bosses_defeated >= 2 else BossEncounterPhase.INACTIVE
+	spawn_timer = GameMath.spawn_interval(run_time)
+	elite_timer = GameMath.ELITE_SPAWN_INTERVAL
+	var reward_text := "ABILITIES RESET  //  WEAPON OVERCLOCKED" if completed_stage == 1 else "ABILITIES RESET  //  BASE WEAPON MK II"
+	popups.append({"pos": player_pos, "text": reward_text, "life": 2.4, "duration": 2.4, "item_type": -1, "occlusion_opacity": 1.0, "color": LIME_DARK})
+	audio.play_sfx("item_pickup")
+	_try_begin_next_boss_encounter()
+
+
+func _clear_boss_volley_debris() -> void:
+	for i in debris.size():
+		if bool(debris[i].active) and int(debris[i].get("source", DebrisSource.REGULAR)) == DebrisSource.BOSS_VOLLEY:
+			debris[i].active = false
+
+
+func _reset_abilities_for_boss_reward() -> void:
+	for i in item_levels.size():
+		item_levels[i] = 0
+	overcharge_item = -1
+	overcharge_left = 0.0
+	hitter_angle = 0.0
+	aoe_timer = INF
+	aoe_warning_active = false
+	aoe_flash_left = 0.0
+	mine_timer = INF
+	for i in turrets.size():
+		turrets[i].active = false
+	for i in mines.size():
+		mines[i].active = false
+	for i in pickups.size():
+		pickups[i].active = false
+	for i in item_warnings.size():
+		item_warnings[i].active = false
+	for i in pellets.size():
+		if bool(pellets[i].active) and int(pellets[i].owner) == ProjectileOwner.TURRET:
+			pellets[i].active = false
+	emit_signal("item_overcharge_changed", -1, 0.0)
+
+
+func _normal_spawning_enabled() -> bool:
+	return boss_encounter_phase == BossEncounterPhase.INACTIVE or boss_encounter_phase == BossEncounterPhase.COMPLETED
 
 
 func _weighted_spawn_tier() -> int:
@@ -896,7 +1119,7 @@ func _active_germ_count() -> int:
 func _active_regular_germ_count() -> int:
 	var count := 0
 	for g in germs:
-		if bool(g.active) and int(g.tier) != GermData.GermTier.ELITE:
+		if bool(g.active) and int(g.tier) <= GermData.GermTier.SMALL:
 			count += 1
 	return count
 
@@ -904,7 +1127,15 @@ func _active_regular_germ_count() -> int:
 func _pending_regular_germ_count() -> int:
 	var count := 0
 	for warning in spawn_warnings:
-		if int(warning.tier) != GermData.GermTier.ELITE:
+		if int(warning.tier) <= GermData.GermTier.SMALL:
+			count += 1
+	return count
+
+
+func _active_debris_count() -> int:
+	var count := 0
+	for fragment in debris:
+		if bool(fragment.active):
 			count += 1
 	return count
 
@@ -1126,13 +1357,13 @@ func _try_show_germ_dialogue(index: int, queue_if_blocked: bool = false) -> bool
 	if index < 0 or index >= germs.size() or not bool(germs[index].active):
 		return false
 	var tier := int(germs[index].tier)
-	var is_elite := tier == GermData.GermTier.ELITE
+	var uses_elite_voice := tier == GermData.GermTier.ELITE or _is_boss_tier(tier)
 	if dialogue_speaker != DialogueSpeaker.NONE or dialogue_cooldown > 0.0:
 		if queue_if_blocked:
 			_queue_pending_dialogue(index)
 		return false
 	var line := ""
-	if is_elite:
+	if uses_elite_voice:
 		line = CULTURE_WAR_DIALOGUE.elite_line(rng.randi())
 	else:
 		line = CULTURE_WAR_DIALOGUE.regular_line(
@@ -1148,7 +1379,7 @@ func _try_show_germ_dialogue(index: int, queue_if_blocked: bool = false) -> bool
 func _queue_pending_dialogue(index: int) -> void:
 	if index in pending_dialogue_germ_indices:
 		return
-	if index >= 0 and index < germs.size() and bool(germs[index].active) and int(germs[index].tier) == GermData.GermTier.ELITE:
+	if index >= 0 and index < germs.size() and bool(germs[index].active) and (int(germs[index].tier) == GermData.GermTier.ELITE or _is_boss_tier(int(germs[index].tier))):
 		var previous_first := pending_dialogue_germ_indices[0]
 		pending_dialogue_germ_indices[0] = index
 		if previous_first >= 0:
@@ -1269,6 +1500,11 @@ func _start_run() -> void:
 	mine_timer = INF
 	overcharge_item = -1
 	overcharge_left = 0.0
+	boss_encounter_phase = BossEncounterPhase.INACTIVE
+	bosses_defeated = 0
+	active_boss_stage = -1
+	base_weapon_damage = 1
+	base_weapon_fire_rate = GameMath.BASE_PLAYER_FIRE_RATE
 	boost_charge = 1.0
 	boost_delay = 0.0
 	boost_active = false
@@ -1468,14 +1704,16 @@ func _draw_game_world() -> void:
 	for pickup in pickups:
 		if bool(pickup.active): _draw_pickup(pickup, offset)
 	for d in debris:
-		if bool(d.active): _draw_debris(Vector2(d.pos) + offset, float(d.angle))
+		if bool(d.active): _draw_debris(Vector2(d.pos) + offset, float(d.angle), int(d.get("source", DebrisSource.REGULAR)))
 	for i in germs.size():
 		if bool(germs[i].active): _draw_germ(germs[i], offset, _dialogue_speaker_scale(i))
 	for p in pellets:
 		if bool(p.active):
-			var pellet_color := LIME if int(p.owner) == ProjectileOwner.PLAYER else PURPLE_SOFT
-			draw_circle(Vector2(p.pos) + offset, 5.0, pellet_color)
-			draw_arc(Vector2(p.pos) + offset, 6.5, 0.0, TAU, 18, LIME_DARK if int(p.owner) == ProjectileOwner.PLAYER else PURPLE, 1.5, true)
+			var upgraded_player_shot := int(p.owner) == ProjectileOwner.PLAYER and int(p.get("damage", 1)) > 1
+			var pellet_color := ORANGE_HOT if upgraded_player_shot else (LIME if int(p.owner) == ProjectileOwner.PLAYER else PURPLE_SOFT)
+			var pellet_radius := 7.0 if upgraded_player_shot else 5.0
+			draw_circle(Vector2(p.pos) + offset, pellet_radius, pellet_color)
+			draw_arc(Vector2(p.pos) + offset, pellet_radius + 1.5, 0.0, TAU, 18, WHITE if upgraded_player_shot else (LIME_DARK if int(p.owner) == ProjectileOwner.PLAYER else PURPLE), 1.5, true)
 	_draw_aoe_effect(offset)
 	_draw_spinning_hitters(offset)
 	_draw_player(offset, _dialogue_speaker_scale())
@@ -1487,6 +1725,8 @@ func _draw_game_world() -> void:
 		var popup_color := PURPLE
 		if int(popup.get("item_type", -1)) >= 0:
 			popup_color = ItemData.color(int(popup.item_type))
+		elif popup.has("color"):
+			popup_color = Color(popup.color)
 		_draw_text_centered(str(popup.text), Vector2(popup.pos) + offset, 18, Color(popup_color.r, popup_color.g, popup_color.b, alpha))
 	draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 	var cinematic_hud_opacity := lerpf(1.0, DIALOGUE_CINEMATIC_HUD_OPACITY, _dialogue_cinematic_amount())
@@ -1513,8 +1753,8 @@ func _draw_spawn_warning(warning: Dictionary, offset: Vector2) -> void:
 	var progress := 1.0 - clampf(float(warning.life) / float(warning.duration), 0.0, 1.0)
 	var motion := 0.0 if bool(saved.get("reduced_motion", false)) else sin(progress * TAU * 3.0)
 	var aura_radius := spec.radius + 18.0 + motion * 5.0
-	var color := ORANGE_HOT if tier == GermData.GermTier.ELITE else (CYAN if tier != GermData.GermTier.MEDIUM else PURPLE_SOFT)
-	var ring_color := ORANGE_HOT if tier == GermData.GermTier.ELITE else PURPLE
+	var color := BOSS_2_FILL if tier == GermData.GermTier.BOSS_2 else (BOSS_FILL if tier == GermData.GermTier.BOSS else (ORANGE_HOT if tier == GermData.GermTier.ELITE else (CYAN if tier != GermData.GermTier.MEDIUM else PURPLE_SOFT)))
+	var ring_color := BOSS_2_CORE if tier == GermData.GermTier.BOSS_2 else (LIME if tier == GermData.GermTier.BOSS else (ORANGE_HOT if tier == GermData.GermTier.ELITE else PURPLE))
 	draw_circle(pos, aura_radius, Color(color.r, color.g, color.b, 0.09 + progress * 0.1))
 	for ring in 3:
 		var ring_radius := aura_radius + float(ring) * 9.0 - progress * 7.0
@@ -1585,18 +1825,45 @@ func _draw_germ(g: Dictionary, offset: Vector2, actor_scale: float = 1.0) -> voi
 	var spec := germ_specs[tier]
 	var radius := spec.radius * actor_scale
 	var is_elite := tier == GermData.GermTier.ELITE
-	var fill := ORANGE if is_elite else (CYAN if tier != GermData.GermTier.MEDIUM else PURPLE_SOFT)
-	var outline := ORANGE_HOT if is_elite else PURPLE
-	var spike_count := 14 if is_elite else 10
+	var is_boss_2 := tier == GermData.GermTier.BOSS_2
+	var is_boss := _is_boss_tier(tier)
+	var fill := BOSS_2_FILL if is_boss_2 else (BOSS_FILL if is_boss else (ORANGE if is_elite else (CYAN if tier != GermData.GermTier.MEDIUM else PURPLE_SOFT)))
+	var outline := BOSS_2_CORE if is_boss_2 else (ORANGE_HOT if is_boss or is_elite else PURPLE)
+	var spike_count := 22 if is_boss_2 else (18 if is_boss else (14 if is_elite else 10))
+	if is_boss and int(g.dash_phase) == BossDashPhase.WARNING:
+		var warning_motion := 0.0 if bool(saved.get("reduced_motion", false)) else 0.5 + sin(float(g.dash_timer) * 18.0) * 0.5
+		var dash_direction := Vector2(g.dash_direction)
+		var tell_start := pos + dash_direction * (radius + 8.0)
+		var tell_end := pos + dash_direction * minf(arena_radius * 0.9, 360.0)
+		draw_line(tell_start, tell_end, Color(ORANGE_HOT.r, ORANGE_HOT.g, ORANGE_HOT.b, 0.62 + warning_motion * 0.28), 4.0, true)
+		var tell_side := dash_direction.orthogonal()
+		draw_colored_polygon(PackedVector2Array([tell_end, tell_end - dash_direction * 18.0 + tell_side * 10.0, tell_end - dash_direction * 18.0 - tell_side * 10.0]), ORANGE_HOT)
+	if is_boss_2 and int(g.dash_phase) == BossDashPhase.VOLLEY_WARNING:
+		var volley_motion := 0.0 if bool(saved.get("reduced_motion", false)) else 0.5 + 0.5 * sin(float(g.volley_timer) * 20.0)
+		for ring in 3:
+			draw_arc(pos, radius + 15.0 + float(ring) * 13.0, 0.0, TAU, 64, Color(BOSS_2_CORE.r, BOSS_2_CORE.g, BOSS_2_CORE.b, 0.5 + volley_motion * 0.3 - float(ring) * 0.1), 3.0, true)
+		for shot in GameMath.BOSS_VOLLEY_COUNT:
+			var volley_angle := float(g.volley_rotation) + TAU * float(shot) / float(GameMath.BOSS_VOLLEY_COUNT)
+			var volley_direction := Vector2.RIGHT.rotated(volley_angle)
+			draw_line(pos + volley_direction * (radius + 8.0), pos + volley_direction * (radius + 42.0), LIME, 3.0, true)
 	for i in spike_count:
 		var a := TAU * float(i) / float(spike_count) + float(g.phase) * 0.18
 		var inner := pos + Vector2.RIGHT.rotated(a) * (radius * 0.78)
-		var spike_extension := ((9.0 if is_elite else 5.0) + sin(a * 3.0) * 3.0) * actor_scale
+		var spike_extension := ((15.0 if is_boss_2 else (12.0 if is_boss else (9.0 if is_elite else 5.0))) + sin(a * 3.0) * 3.0) * actor_scale
 		var outer := pos + Vector2.RIGHT.rotated(a) * (radius + spike_extension)
 		draw_line(inner, outer, outline, maxf(1.5, radius * 0.07), true)
 	draw_circle(pos, radius, Color(fill.r, fill.g, fill.b, 0.78))
 	draw_arc(pos, radius, 0.0, TAU, 48, outline, maxf(2.0, radius * 0.08), true)
-	if is_elite:
+	if is_boss_2:
+		draw_circle(pos, radius * 0.7, Color(BOSS_2_CORE.r, BOSS_2_CORE.g, BOSS_2_CORE.b, 0.4))
+		draw_arc(pos, radius * 0.76, 0.0, TAU, 52, LIME, 4.5, true)
+		draw_arc(pos, radius * 0.58, 0.0, TAU, 48, WHITE, 3.0, true)
+		draw_arc(pos, radius * 0.4, 0.0, TAU, 40, ORANGE_HOT, 2.5, true)
+	elif is_boss:
+		draw_circle(pos, radius * 0.66, Color(BOSS_CORE.r, BOSS_CORE.g, BOSS_CORE.b, 0.88))
+		draw_arc(pos, radius * 0.72, 0.0, TAU, 48, LIME, 4.0, true)
+		draw_arc(pos, radius * 0.51, 0.0, TAU, 40, WHITE, 2.5, true)
+	elif is_elite:
 		draw_arc(pos, radius * 0.68, 0.0, TAU, 40, WHITE, 3.0, true)
 	draw_circle(pos + Vector2(-radius * 0.24, -radius * 0.12), radius * 0.12, outline)
 	draw_circle(pos + Vector2(radius * 0.18, radius * 0.22), radius * 0.08, DARK_MINT)
@@ -1604,15 +1871,17 @@ func _draw_germ(g: Dictionary, offset: Vector2, actor_scale: float = 1.0) -> voi
 		draw_arc(pos, radius + 4.0, -PI * 0.5, -PI * 0.5 + TAU * float(g.hp) / float(spec.hp), 24, ORANGE_HOT, 3.0, true)
 
 
-func _draw_debris(pos: Vector2, angle: float) -> void:
+func _draw_debris(pos: Vector2, angle: float, source: int = DebrisSource.REGULAR) -> void:
 	var pts := PackedVector2Array([
 		pos + Vector2(-10.0, -6.0).rotated(angle),
 		pos + Vector2(9.0, -9.0).rotated(angle),
 		pos + Vector2(6.0, 8.0).rotated(angle),
 		pos + Vector2(-7.0, 11.0).rotated(angle),
 	])
-	draw_colored_polygon(pts, PURPLE_SOFT)
-	draw_polyline(PackedVector2Array([pts[0], pts[1], pts[2], pts[3], pts[0]]), PURPLE, 2.0, true)
+	var fill := BOSS_2_CORE if source == DebrisSource.BOSS_VOLLEY else PURPLE_SOFT
+	var outline := LIME if source == DebrisSource.BOSS_VOLLEY else PURPLE
+	draw_colored_polygon(pts, fill)
+	draw_polyline(PackedVector2Array([pts[0], pts[1], pts[2], pts[3], pts[0]]), outline, 2.0, true)
 
 
 func _draw_mine(mine: Dictionary, offset: Vector2) -> void:
@@ -1681,9 +1950,13 @@ func _draw_player(offset: Vector2, actor_scale: float = 1.0) -> void:
 	var forward := Vector2.RIGHT.rotated(player_facing)
 	var side := forward.orthogonal()
 	var shape := PackedVector2Array([pos + forward * 24.0 * actor_scale, pos - forward * 15.0 * actor_scale + side * 13.0 * actor_scale, pos - forward * 11.0 * actor_scale, pos - forward * 15.0 * actor_scale - side * 13.0 * actor_scale])
-	draw_colored_polygon(shape, ORANGE)
+	draw_colored_polygon(shape, ORANGE_HOT if base_weapon_damage > 1 else ORANGE)
 	draw_polyline(PackedVector2Array([shape[0], shape[1], shape[2], shape[3], shape[0]]), ORANGE_HOT, 2.5 * actor_scale, true)
 	draw_circle(pos, 5.0 * actor_scale, WHITE)
+	if base_weapon_damage > 1:
+		draw_arc(pos, 10.0 * actor_scale, -0.65, 0.65, 16, LIME, 2.5 * actor_scale, true)
+	if base_weapon_fire_rate > GameMath.BASE_PLAYER_FIRE_RATE:
+		draw_arc(pos, 14.0 * actor_scale, -0.8, 0.8, 18, CYAN, 2.0 * actor_scale, true)
 
 
 func _draw_dialogue_bubble(offset: Vector2) -> void:
@@ -1700,7 +1973,7 @@ func _draw_dialogue_bubble(offset: Vector2) -> void:
 		var germ := germs[dialogue_germ_index]
 		speaker_pos = _dialogue_world_to_screen(Vector2(germ.pos), offset)
 		speaker_radius = germ_specs[int(germ.tier)].radius * camera_zoom * _dialogue_speaker_scale(dialogue_germ_index)
-		stroke = ORANGE_HOT if int(germ.tier) == GermData.GermTier.ELITE else PURPLE
+		stroke = ORANGE_HOT if int(germ.tier) == GermData.GermTier.ELITE or _is_boss_tier(int(germ.tier)) else PURPLE
 		text_color = PURPLE
 	var layout := _dialogue_layout(speaker_pos, dialogue_text, speaker_radius)
 	var rect: Rect2 = layout.rect

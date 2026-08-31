@@ -2,7 +2,7 @@
 
 PETRI is a single-player, desktop-browser survival game built with Godot 4.7.2 and GDScript. Its main mode, **CULTURE WARS**, treats the discourse as the infection: ragebait germs split into louder opposing takes, platform elites monetize both sides, and the antibiotic protagonist notices who profits. The satire targets inflammatory rhetoric and its incentives—not demographic groups or ordinary people.
 
-You are an antibiotic particle inside a bounded culture dish: move with inertia, shoot germs, manage a rechargeable boost, and survive the debris created by splitting threats. Pulsing membrane auras telegraph every newly entering germ. When a germ or the player speaks, gameplay freezes for a brief cut scene that eases toward the speaker, types the line into a speech bubble, pulses the speaker inward, then returns to the full arena. Cut scenes are globally limited to roughly 2.5 per minute; lines up to four words receive 2.2 seconds, with another 0.25 seconds for each additional word. Scheduled gold tank elites drop permanent automatic upgrades through item-specific pickup auras.
+You are an antibiotic particle inside a bounded culture dish: move with inertia, shoot germs, manage a rechargeable boost, and survive the debris created by splitting threats. Pulsing membrane auras telegraph every newly entering germ. When a germ or the player speaks, gameplay freezes for a brief cut scene that eases toward the speaker, types the line into a speech bubble, pulses the speaker inward, then returns to the full arena. Cut scenes are globally limited to roughly 2.5 per minute; lines up to four words receive 2.2 seconds, with another 0.25 seconds for each additional word. Scheduled gold tank elites drop permanent automatic upgrades through item-specific pickup auras. Reaching 50,000 points locks the spawn pipeline until the dish is clear, then introduces a one-time dash boss. Defeating it wipes collected abilities and upgrades the base weapon to double-damage pellets. At 100,000 points, a stronger boss adds a telegraphed radial debris volley to the same dash attack; defeating it resets abilities again and overclocks the double-damage weapon from six to nine volleys per second for the rest of the run.
 
 ## Controls
 
@@ -13,7 +13,7 @@ You are an antibiotic particle inside a bounded culture dish: move with inertia,
 - `Escape` — pause/resume
 - `R` — restart after game over
 
-Items activate automatically after collection. Spinning hitters, AOE pulses, turrets, ricochet, spread shots, and leave-behind mines can each reach level three; fully maxed builds receive temporary level-four overcharges.
+Items activate automatically after collection. Spinning hitters, AOE pulses, turrets, ricochet, spread shots, and leave-behind mines can each reach level three; fully maxed builds receive temporary level-four overcharges. After each milestone boss, these abilities rebuild from level zero while spread and ricochet continue to scale the rewarded base weapon.
 
 Space is exclusively boost. There is no syringe action.
 
@@ -33,7 +33,7 @@ The project uses the Compatibility renderer and contains no threaded gameplay or
 godot --headless --path . --script tests/run_tests.gd
 ```
 
-The deterministic suite covers boost timing, combo scoring, germ splits, dialogue cut-scene sequencing, elite cadence, pickup lifecycle, all six item effects, overcharge, difficulty ramping, persistence, collision outcomes, fixed pools, and scene loading.
+The deterministic suite covers boost timing, combo scoring, germ splits, dialogue cut-scene sequencing, elite cadence, both milestone boss lifecycles, dash and radial-volley behavior, pickup lifecycle, both ability resets and weapon rewards, all six item effects, overcharge, difficulty ramping, persistence, collision outcomes, fixed pools, and scene loading.
 
 ## Export for web
 
@@ -74,5 +74,5 @@ No remote is created until a repository URL is supplied.
 - `scripts/save_store.gd` — `user://petri.cfg` persistence
 - `scripts/audio_manager.gd` — runtime-synthesized original SFX and ambient hum, unlocked after user interaction
 
-The runtime preallocates 35 regular germs plus one elite, 80 fragments, 240 projectiles, three turrets, 48 mines, and four pickup/aura slots. No account, networking, backend, leaderboard, touch controls, or per-projectile node creation is included in v1.
+The runtime preallocates 35 regular germs, one elite, and one shared slot for the 50,000- and 100,000-point bosses, plus 80 fragments, 240 projectiles, three turrets, 48 mines, and four pickup/aura slots. No account, networking, backend, leaderboard, touch controls, or per-projectile node creation is included in v1.
 # petri
