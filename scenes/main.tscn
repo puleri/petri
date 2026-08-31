@@ -1,10 +1,14 @@
-[gd_scene load_steps=3 format=3]
+[gd_scene format=3 uid="uid://d4dncm40axdy6"]
 
-[ext_resource type="Script" path="res://scripts/petri_game.gd" id="1_game"]
-[ext_resource type="Script" path="res://scripts/audio_manager.gd" id="2_audio"]
+[ext_resource type="Script" uid="uid://d2eb226uf1ito" path="res://scripts/petri_game.gd" id="1_game"]
+[ext_resource type="Script" uid="uid://cgf3ggm673udd" path="res://scripts/audio_manager.gd" id="2_audio"]
+[ext_resource type="PackedScene" uid="uid://bilqtmntpl3ir" path="res://assets/Specimen/Meeboid.tscn" id="3_sugp2"]
 
-[node name="PETRI" type="Node2D"]
+[node name="PETRI" type="Node2D" unique_id=2145200481]
 script = ExtResource("1_game")
 
-[node name="AudioManager" type="Node" parent="."]
+[node name="AudioManager" type="Node" parent="." unique_id=1338874260]
 script = ExtResource("2_audio")
+
+[node name="Node2D" parent="." unique_id=773224256 instance=ExtResource("3_sugp2")]
+position = Vector2(297, 227)
