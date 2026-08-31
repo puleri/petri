@@ -10,6 +10,14 @@ Dialogue runs as a short simulation-freezing cut scene without adding a camera n
 
 Target compositions are 1280×720, 1920×1080, and 2560×1080.
 
+## Germ visuals
+
+Active germs are drawn from the four concentric `Meeboid-4.png` through `Meeboid-1.png` layers; `Meeboid.png` remains a composite preview. Startup builds six hue-shifted, mipmapped texture sets while preserving the original alpha and relative shading: cyan for large/small, lavender for medium, orange for the elite, dark purple for the first boss, and deeper purple for the second boss. The 238-pixel outer layer scales to each existing gameplay radius, so collision geometry and tier statistics remain unchanged. Elite and boss identity rings, health arcs, dash tells, and volley warnings render around the illustrated body.
+
+Each pooled germ stores one hit-reaction timer. A surviving hit restarts the supplied 0.3-second outer-to-inner 1.1× layer ripple and a coral flash that peaks at 0.05 seconds and clears by 0.25 seconds. Killing blows still split or disappear immediately. The renderer evaluates these curves directly from pooled state—there are no germ child nodes or per-hit tweens. Reduced Motion clears active hit reactions and suppresses both ripple and flash; future hits animate normally if the preference is disabled again.
+
+The player body uses the soft-edged `P1.png` arrow. Its upward-facing source artwork is rotated 90 degrees into the aim direction and rendered at a 46-pixel source width while preserving the existing 18-pixel collision radius, dialogue pulse, boost trail, spawn-protection ring, and weapon-upgrade indicators.
+
 ## Gameplay constants
 
 - Base acceleration: 360 px/s²

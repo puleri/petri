@@ -17,6 +17,7 @@ func _run_suite() -> void:
 	_test_persistence()
 	_test_collisions()
 	_test_resources_and_scene()
+	_test_germ_assets_and_hit_reactions()
 	_test_culture_wars_dialogue()
 	_test_timer_occlusion()
 	_test_item_specs()
@@ -134,7 +135,67 @@ func _test_resources_and_scene() -> void:
 	_check(boss.hp == 240 and boss.radius == 88.0 and boss.score == 5000 and boss.fragment_count == 0, "fifty-thousand-point boss data resource")
 	_check(boss_2.hp == 600 and boss_2.radius == 100.0 and boss_2.score == 10000 and boss_2.fragment_count == 0, "hundred-thousand-point boss data resource")
 	_check(load("res://assets/figma/petri-logo.png") != null, "Figma PETRI logo loads")
+	var player_texture := load("res://assets/Specimen/P1/P1.png") as Texture2D
+	_check(player_texture != null and player_texture.get_size() == Vector2(226.0, 157.0), "soft-edged P1 player texture loads at its source size")
 	_check(load("res://scenes/main.tscn") != null, "main scene loads")
+
+
+func _test_germ_assets_and_hit_reactions() -> void:
+	var game := _new_game()
+	var initial_node_count := _count_nodes(game)
+	var visual_cache: Array = game.get("germ_visual_textures")
+	var flash_masks: Array = game.get("germ_flash_masks")
+	var cache_complete := visual_cache.size() == GermData.GermTier.size() and flash_masks.size() == 4
+	var mipmaps_complete := cache_complete
+	if cache_complete:
+		for tier_layers in visual_cache:
+			cache_complete = cache_complete and Array(tier_layers).size() == 4
+			for texture in Array(tier_layers):
+				var cached_texture := texture as Texture2D
+				mipmaps_complete = mipmaps_complete and cached_texture != null and cached_texture.get_image().has_mipmaps()
+	_check(cache_complete, "all six germ tiers cache four layered Meeboid textures")
+	_check(mipmaps_complete, "generated germ textures include mipmaps for small tiers")
+	_check(Color(game.call("_germ_palette_color", GermData.GermTier.LARGE)).is_equal_approx(Color("55DDE0")) and Color(game.call("_germ_palette_color", GermData.GermTier.SMALL)).is_equal_approx(Color("55DDE0")), "large and small germs use the cyan body palette")
+	_check(Color(game.call("_germ_palette_color", GermData.GermTier.MEDIUM)).is_equal_approx(Color("EFCEFD")) and Color(game.call("_germ_palette_color", GermData.GermTier.ELITE)).is_equal_approx(Color("FF9E73")), "medium and elite germs use lavender and orange palettes")
+
+	var center := Vector2(game.get("arena_center"))
+	game.call("_spawn_germ", GermData.GermTier.ELITE, center)
+	var elite_index := _first_active_germ(game, GermData.GermTier.ELITE)
+	var germs: Array = game.get("germs")
+	game.call("_damage_germ", elite_index, 1)
+	_check(is_equal_approx(float(germs[elite_index].hit_reaction_left), 0.3), "surviving germ hits start the pooled reaction")
+	germs[elite_index].hit_reaction_left = 0.2
+	var outer_peak := float(game.call("_germ_hit_layer_scale", germs[elite_index], 0))
+	var inner_rising := float(game.call("_germ_hit_layer_scale", germs[elite_index], 3))
+	_check(is_equal_approx(outer_peak, 1.1) and inner_rising > 1.0 and inner_rising < outer_peak, "hit reaction ripples through the supplied layer timing")
+	germs[elite_index].hit_reaction_left = 0.25
+	_check(is_equal_approx(float(game.call("_germ_hit_flash_amount", germs[elite_index])), 1.0), "hit flash reaches full coral at fifty milliseconds")
+	germs[elite_index].hit_reaction_left = 0.05
+	game.call("_damage_germ", elite_index, 1)
+	_check(is_equal_approx(float(germs[elite_index].hit_reaction_left), 0.3), "repeated hits restart instead of queueing the reaction")
+	game.call("_update_germs", 0.31)
+	_check(is_zero_approx(float(germs[elite_index].hit_reaction_left)), "hit reaction returns exactly to idle after three tenths")
+	game.call("_damage_germ", elite_index, 999)
+	_check(not bool(germs[elite_index].active) and is_zero_approx(float(germs[elite_index].hit_reaction_left)), "lethal hits remain immediate and clear reaction state")
+
+	game.call("_spawn_germ", GermData.GermTier.SMALL, center)
+	var small_index := _first_active_germ(game, GermData.GermTier.SMALL)
+	_check(is_zero_approx(float(germs[small_index].hit_reaction_left)), "reused germ slots start without stale hit motion")
+	game.call("_damage_germ", small_index, 1)
+	_check(not bool(germs[small_index].active), "one-hit germs do not delay destruction for the visual reaction")
+
+	game.call("_spawn_germ", GermData.GermTier.ELITE, center)
+	elite_index = _first_active_germ(game, GermData.GermTier.ELITE)
+	game.call("_damage_germ", elite_index, 1)
+	game.call("_set_reduced_motion", true)
+	_check(is_zero_approx(float(germs[elite_index].hit_reaction_left)) and is_equal_approx(float(game.call("_germ_hit_layer_scale", germs[elite_index], 0)), 1.0) and is_zero_approx(float(game.call("_germ_hit_flash_amount", germs[elite_index]))), "Reduced Motion clears active germ reactions")
+	game.call("_damage_germ", elite_index, 1)
+	_check(is_zero_approx(float(germs[elite_index].hit_reaction_left)), "damage under Reduced Motion starts no reaction")
+	game.call("_set_reduced_motion", false)
+	game.call("_damage_germ", elite_index, 1)
+	_check(is_equal_approx(float(germs[elite_index].hit_reaction_left), 0.3), "future hits animate after Reduced Motion is disabled")
+	_check(_count_nodes(game) == initial_node_count and germs.size() == 37, "layered hit reactions add no nodes or germ pool slots")
+	_free_game(game)
 
 
 func _test_culture_wars_dialogue() -> void:

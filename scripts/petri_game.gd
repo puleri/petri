@@ -39,6 +39,8 @@ const BOSS_2_FILL := Color("#321A3C")
 const BOSS_2_CORE := Color("#FF6B6B")
 
 const PLAYER_RADIUS := 18.0
+const PLAYER_ASSET_WIDTH := 46.0
+const PLAYER_ASSET_ROTATION_OFFSET := PI * 0.5
 const BASE_ACCEL := 360.0
 const BASE_MAX_SPEED := 190.0
 const DRAG := 105.0
@@ -85,11 +87,24 @@ const HUD_SCALE := 0.72
 const HUD_OCCLUDED_OPACITY := 0.15
 const WORLD_TEXT_OCCLUDED_OPACITY := 0.28
 const OPACITY_TRANSITION_SPEED := 4.5
+const GERM_ASSET_RADIUS := 119.0
+const GERM_HIT_REACTION_SECONDS := 0.3
+const GERM_HIT_FLASH_PEAK_SECONDS := 0.05
+const GERM_HIT_FLASH_END_SECONDS := 0.25
+const GERM_HIT_LAYER_STARTS := [0.0, 0.033333335, 0.06666667, 0.09427313]
+const GERM_HIT_LAYER_PEAKS := [0.10000001, 0.13333334, 0.16550392, 0.19917288]
 
 const CULTURE_WAR_DIALOGUE := preload("res://scripts/culture_war_dialogue.gd")
 
 var font: Font = preload("res://Excelorate-Font.otf")
 var logo_texture: Texture2D = preload("res://assets/figma/petri-logo.png")
+var player_texture: Texture2D = preload("res://assets/Specimen/P1/P1.png")
+var germ_layer_sources: Array[Texture2D] = [
+	preload("res://assets/Specimen/Meeboid/Meeboid-4.png"),
+	preload("res://assets/Specimen/Meeboid/Meeboid-3.png"),
+	preload("res://assets/Specimen/Meeboid/Meeboid-2.png"),
+	preload("res://assets/Specimen/Meeboid/Meeboid-1.png"),
+]
 var germ_specs: Array[GermData] = [
 	preload("res://data/germ_large.tres"),
 	preload("res://data/germ_medium.tres"),
@@ -153,6 +168,8 @@ var turrets: Array[Dictionary] = []
 var mines: Array[Dictionary] = []
 var item_levels: Array[int] = []
 var popups: Array[Dictionary] = []
+var germ_visual_textures: Array = []
+var germ_flash_masks: Array[Texture2D] = []
 var dialogue_speaker := DialogueSpeaker.NONE
 var dialogue_germ_index := -1
 var dialogue_text := ""
@@ -176,8 +193,10 @@ var dialogue_occlusion_opacity := 1.0
 
 func _ready() -> void:
 	process_mode = Node.PROCESS_MODE_ALWAYS
+	texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
 	rng.randomize()
 	_create_pools()
+	_build_germ_visual_cache()
 	saved = save_store.load_data()
 	audio.apply_levels(float(saved.sfx_volume), float(saved.music_volume))
 	_apply_fullscreen_preference()
@@ -190,7 +209,7 @@ func _create_pools() -> void:
 	for i in PELLET_POOL_SIZE:
 		pellets.append({"active": false, "pos": Vector2.ZERO, "vel": Vector2.ZERO, "life": 0.0, "bounces": 0, "owner": ProjectileOwner.PLAYER, "damage": 1})
 	for i in GameMath.MAX_GERMS:
-		germs.append({"active": false, "tier": GermData.GermTier.LARGE, "pos": Vector2.ZERO, "vel": Vector2.ZERO, "move_speed": 0.0, "hp": 0, "phase": 0.0, "hitter_cooldown": 0.0, "topic_id": -1, "stance": -1, "dash_phase": BossDashPhase.CHASE, "dash_timer": INF, "dash_direction": Vector2.ZERO, "volley_timer": INF, "volley_rotation": 0.0})
+		germs.append({"active": false, "tier": GermData.GermTier.LARGE, "pos": Vector2.ZERO, "vel": Vector2.ZERO, "move_speed": 0.0, "hp": 0, "phase": 0.0, "hitter_cooldown": 0.0, "hit_reaction_left": 0.0, "topic_id": -1, "stance": -1, "dash_phase": BossDashPhase.CHASE, "dash_timer": INF, "dash_direction": Vector2.ZERO, "volley_timer": INF, "volley_rotation": 0.0})
 	for i in GameMath.MAX_FRAGMENTS:
 		debris.append({"active": false, "pos": Vector2.ZERO, "vel": Vector2.ZERO, "life": 0.0, "angle": 0.0, "spin": 0.0, "hitter_cooldown": 0.0, "source": DebrisSource.REGULAR, "bounces": -1})
 	for i in TURRET_POOL_SIZE:
@@ -202,6 +221,91 @@ func _create_pools() -> void:
 		pickups.append({"active": false, "item_type": 0, "pos": Vector2.ZERO, "life": 0.0, "phase": 0.0, "overcharge": false})
 	for i in ItemData.ItemType.size():
 		item_levels.append(0)
+
+
+func _build_germ_visual_cache() -> void:
+	germ_visual_textures.clear()
+	germ_flash_masks.clear()
+	for source in germ_layer_sources:
+		germ_flash_masks.append(_make_germ_layer_texture(source, WHITE, true))
+	for tier in GermData.GermTier.size():
+		var tier_layers: Array[Texture2D] = []
+		var target := _germ_palette_color(tier)
+		for source in germ_layer_sources:
+			tier_layers.append(_make_germ_layer_texture(source, target, false))
+		germ_visual_textures.append(tier_layers)
+
+
+func _make_germ_layer_texture(source: Texture2D, target: Color, alpha_mask: bool) -> Texture2D:
+	var image := source.get_image()
+	image.convert(Image.FORMAT_RGBA8)
+	for y in image.get_height():
+		for x in image.get_width():
+			var pixel := image.get_pixel(x, y)
+			if pixel.a <= 0.0:
+				continue
+			if alpha_mask:
+				image.set_pixel(x, y, Color(1.0, 1.0, 1.0, pixel.a))
+			else:
+				var saturation := clampf(pixel.s * target.s, 0.0, 1.0)
+				var value := clampf(pixel.v * target.v, 0.0, 1.0)
+				image.set_pixel(x, y, Color.from_hsv(target.h, saturation, value, pixel.a))
+	image.generate_mipmaps()
+	return ImageTexture.create_from_image(image)
+
+
+func _germ_palette_color(tier: int) -> Color:
+	match tier:
+		GermData.GermTier.MEDIUM:
+			return PURPLE_SOFT
+		GermData.GermTier.ELITE:
+			return ORANGE_HOT
+		GermData.GermTier.BOSS:
+			return BOSS_FILL
+		GermData.GermTier.BOSS_2:
+			return BOSS_2_FILL
+	return CYAN
+
+
+func _germ_hit_layer_scale(germ: Dictionary, layer: int) -> float:
+	if bool(saved.get("reduced_motion", false)) or layer < 0 or layer >= GERM_HIT_LAYER_STARTS.size():
+		return 1.0
+	var left := float(germ.get("hit_reaction_left", 0.0))
+	if left <= 0.0:
+		return 1.0
+	var elapsed := GERM_HIT_REACTION_SECONDS - left
+	var start := float(GERM_HIT_LAYER_STARTS[layer])
+	var peak := float(GERM_HIT_LAYER_PEAKS[layer])
+	if elapsed <= start:
+		return 1.0
+	if elapsed <= peak:
+		return lerpf(1.0, 1.1, clampf((elapsed - start) / maxf(peak - start, 0.0001), 0.0, 1.0))
+	return lerpf(1.1, 1.0, clampf((elapsed - peak) / maxf(GERM_HIT_REACTION_SECONDS - peak, 0.0001), 0.0, 1.0))
+
+
+func _germ_hit_flash_amount(germ: Dictionary) -> float:
+	if bool(saved.get("reduced_motion", false)):
+		return 0.0
+	var left := float(germ.get("hit_reaction_left", 0.0))
+	if left <= 0.0:
+		return 0.0
+	var elapsed := GERM_HIT_REACTION_SECONDS - left
+	if elapsed <= GERM_HIT_FLASH_PEAK_SECONDS:
+		return clampf(elapsed / GERM_HIT_FLASH_PEAK_SECONDS, 0.0, 1.0)
+	if elapsed <= GERM_HIT_FLASH_END_SECONDS:
+		return 1.0 - clampf((elapsed - GERM_HIT_FLASH_PEAK_SECONDS) / (GERM_HIT_FLASH_END_SECONDS - GERM_HIT_FLASH_PEAK_SECONDS), 0.0, 1.0)
+	return 0.0
+
+
+func _clear_germ_hit_reactions() -> void:
+	for i in germs.size():
+		germs[i].hit_reaction_left = 0.0
+
+
+func _set_reduced_motion(enabled: bool) -> void:
+	saved.reduced_motion = enabled
+	if enabled:
+		_clear_germ_hit_reactions()
 
 
 func _process(delta: float) -> void:
@@ -406,6 +510,7 @@ func _update_germs(delta: float) -> void:
 			continue
 		var g := germs[i]
 		g.hitter_cooldown = maxf(0.0, float(g.hitter_cooldown) - delta)
+		g.hit_reaction_left = maxf(0.0, float(g.get("hit_reaction_left", 0.0)) - delta)
 		if _is_boss_tier(int(g.tier)):
 			g = _update_boss_movement(g, delta)
 		else:
@@ -563,6 +668,8 @@ func _damage_germ(index: int, amount: int) -> bool:
 	if int(germs[index].hp) <= 0:
 		_destroy_germ(index)
 	else:
+		if not bool(saved.get("reduced_motion", false)):
+			germs[index].hit_reaction_left = GERM_HIT_REACTION_SECONDS
 		audio.play_sfx("impact")
 	return true
 
@@ -782,7 +889,7 @@ func _spawn_germ(tier: int, position_override: Variant = null, topic_override: i
 			topic_id = topic_override if topic_override >= 0 else rng.randi_range(0, CULTURE_WAR_DIALOGUE.topic_count() - 1)
 			if tier != GermData.GermTier.LARGE:
 				stance = stance_override if stance_override >= 0 else rng.randi_range(CULTURE_WAR_DIALOGUE.STANCE_A, CULTURE_WAR_DIALOGUE.STANCE_B)
-		germs[i] = {"active": true, "tier": tier, "pos": at, "vel": direction * speed, "move_speed": speed, "hp": spec.hp, "phase": rng.randf_range(0.0, TAU), "hitter_cooldown": 0.0, "topic_id": topic_id, "stance": stance, "dash_phase": BossDashPhase.CHASE, "dash_timer": GameMath.BOSS_INITIAL_DASH_DELAY if _is_boss_tier(tier) else INF, "dash_direction": Vector2.ZERO, "volley_timer": GameMath.BOSS_VOLLEY_INITIAL_DELAY if tier == GermData.GermTier.BOSS_2 else INF, "volley_rotation": 0.0}
+		germs[i] = {"active": true, "tier": tier, "pos": at, "vel": direction * speed, "move_speed": speed, "hp": spec.hp, "phase": rng.randf_range(0.0, TAU), "hitter_cooldown": 0.0, "hit_reaction_left": 0.0, "topic_id": topic_id, "stance": stance, "dash_phase": BossDashPhase.CHASE, "dash_timer": GameMath.BOSS_INITIAL_DASH_DELAY if _is_boss_tier(tier) else INF, "dash_direction": Vector2.ZERO, "volley_timer": GameMath.BOSS_VOLLEY_INITIAL_DELAY if tier == GermData.GermTier.BOSS_2 else INF, "volley_rotation": 0.0}
 		if _is_boss_tier(tier):
 			boss_encounter_phase = BossEncounterPhase.ACTIVE
 		_try_show_germ_dialogue(i, dialogue_priority or tier == GermData.GermTier.LARGE or tier == GermData.GermTier.ELITE or _is_boss_tier(tier))
@@ -975,6 +1082,7 @@ func _destroy_germ(index: int) -> void:
 	var topic_id := int(germs[index].get("topic_id", -1))
 	var stance := int(germs[index].get("stance", -1))
 	germs[index].active = false
+	germs[index].hit_reaction_left = 0.0
 	_remove_pending_dialogue(index)
 	if dialogue_speaker == DialogueSpeaker.GERM and dialogue_germ_index == index:
 		_clear_dialogue_bubble()
@@ -1473,7 +1581,9 @@ func _dialogue_intensity(tier: int) -> int:
 
 func _start_run() -> void:
 	for i in pellets.size(): pellets[i].active = false
-	for i in germs.size(): germs[i].active = false
+	for i in germs.size():
+		germs[i].active = false
+		germs[i].hit_reaction_left = 0.0
 	for i in debris.size(): debris[i].active = false
 	for i in turrets.size(): turrets[i].active = false
 	for i in mines.size(): mines[i].active = false
@@ -1629,7 +1739,7 @@ func _change_setting(index: int) -> void:
 		2:
 			saved.fullscreen = not bool(saved.fullscreen)
 			_apply_fullscreen_preference()
-		3: saved.reduced_motion = not bool(saved.reduced_motion)
+		3: _set_reduced_motion(not bool(saved.reduced_motion))
 	save_store.save_data(saved)
 	audio.apply_levels(float(saved.sfx_volume), float(saved.music_volume))
 	audio.play_sfx("ui")
@@ -1827,9 +1937,6 @@ func _draw_germ(g: Dictionary, offset: Vector2, actor_scale: float = 1.0) -> voi
 	var is_elite := tier == GermData.GermTier.ELITE
 	var is_boss_2 := tier == GermData.GermTier.BOSS_2
 	var is_boss := _is_boss_tier(tier)
-	var fill := BOSS_2_FILL if is_boss_2 else (BOSS_FILL if is_boss else (ORANGE if is_elite else (CYAN if tier != GermData.GermTier.MEDIUM else PURPLE_SOFT)))
-	var outline := BOSS_2_CORE if is_boss_2 else (ORANGE_HOT if is_boss or is_elite else PURPLE)
-	var spike_count := 22 if is_boss_2 else (18 if is_boss else (14 if is_elite else 10))
 	if is_boss and int(g.dash_phase) == BossDashPhase.WARNING:
 		var warning_motion := 0.0 if bool(saved.get("reduced_motion", false)) else 0.5 + sin(float(g.dash_timer) * 18.0) * 0.5
 		var dash_direction := Vector2(g.dash_direction)
@@ -1846,29 +1953,40 @@ func _draw_germ(g: Dictionary, offset: Vector2, actor_scale: float = 1.0) -> voi
 			var volley_angle := float(g.volley_rotation) + TAU * float(shot) / float(GameMath.BOSS_VOLLEY_COUNT)
 			var volley_direction := Vector2.RIGHT.rotated(volley_angle)
 			draw_line(pos + volley_direction * (radius + 8.0), pos + volley_direction * (radius + 42.0), LIME, 3.0, true)
-	for i in spike_count:
-		var a := TAU * float(i) / float(spike_count) + float(g.phase) * 0.18
-		var inner := pos + Vector2.RIGHT.rotated(a) * (radius * 0.78)
-		var spike_extension := ((15.0 if is_boss_2 else (12.0 if is_boss else (9.0 if is_elite else 5.0))) + sin(a * 3.0) * 3.0) * actor_scale
-		var outer := pos + Vector2.RIGHT.rotated(a) * (radius + spike_extension)
-		draw_line(inner, outer, outline, maxf(1.5, radius * 0.07), true)
-	draw_circle(pos, radius, Color(fill.r, fill.g, fill.b, 0.78))
-	draw_arc(pos, radius, 0.0, TAU, 48, outline, maxf(2.0, radius * 0.08), true)
+	_draw_germ_asset_body(g, pos, tier, radius, offset)
 	if is_boss_2:
-		draw_circle(pos, radius * 0.7, Color(BOSS_2_CORE.r, BOSS_2_CORE.g, BOSS_2_CORE.b, 0.4))
 		draw_arc(pos, radius * 0.76, 0.0, TAU, 52, LIME, 4.5, true)
 		draw_arc(pos, radius * 0.58, 0.0, TAU, 48, WHITE, 3.0, true)
 		draw_arc(pos, radius * 0.4, 0.0, TAU, 40, ORANGE_HOT, 2.5, true)
 	elif is_boss:
-		draw_circle(pos, radius * 0.66, Color(BOSS_CORE.r, BOSS_CORE.g, BOSS_CORE.b, 0.88))
 		draw_arc(pos, radius * 0.72, 0.0, TAU, 48, LIME, 4.0, true)
 		draw_arc(pos, radius * 0.51, 0.0, TAU, 40, WHITE, 2.5, true)
 	elif is_elite:
 		draw_arc(pos, radius * 0.68, 0.0, TAU, 40, WHITE, 3.0, true)
-	draw_circle(pos + Vector2(-radius * 0.24, -radius * 0.12), radius * 0.12, outline)
-	draw_circle(pos + Vector2(radius * 0.18, radius * 0.22), radius * 0.08, DARK_MINT)
 	if int(g.hp) < spec.hp:
 		draw_arc(pos, radius + 4.0, -PI * 0.5, -PI * 0.5 + TAU * float(g.hp) / float(spec.hp), 24, ORANGE_HOT, 3.0, true)
+
+
+func _draw_germ_asset_body(germ: Dictionary, pos: Vector2, tier: int, radius: float, offset: Vector2) -> void:
+	if tier < 0 or tier >= germ_visual_textures.size():
+		return
+	var tier_layers: Array = germ_visual_textures[tier]
+	if tier_layers.size() != germ_layer_sources.size():
+		return
+	var camera_transform := Transform2D(0.0, Vector2.ONE * _dialogue_camera_zoom(), 0.0, _dialogue_camera_origin(offset))
+	var germ_transform := Transform2D(float(germ.phase) * 0.1, Vector2.ONE, 0.0, pos)
+	draw_set_transform_matrix(camera_transform * germ_transform)
+	var base_scale := radius / GERM_ASSET_RADIUS
+	var flash_amount := _germ_hit_flash_amount(germ)
+	for layer in tier_layers.size():
+		var texture: Texture2D = tier_layers[layer]
+		var layer_scale := base_scale * _germ_hit_layer_scale(germ, layer)
+		var layer_size := texture.get_size() * layer_scale
+		var rect := Rect2(-layer_size * 0.5, layer_size)
+		draw_texture_rect(texture, rect, false)
+		if flash_amount > 0.0:
+			draw_texture_rect(germ_flash_masks[layer], rect, false, Color(BOSS_2_CORE.r, BOSS_2_CORE.g, BOSS_2_CORE.b, flash_amount))
+	draw_set_transform_matrix(camera_transform)
 
 
 func _draw_debris(pos: Vector2, angle: float, source: int = DebrisSource.REGULAR) -> void:
@@ -1947,12 +2065,13 @@ func _draw_player(offset: Vector2, actor_scale: float = 1.0) -> void:
 		draw_line(pos + tail_dir * 12.0 * actor_scale, pos + tail_dir * 44.0 * actor_scale, Color(LIME.r, LIME.g, LIME.b, 0.7), 8.0 * actor_scale, true)
 	if spawn_protection_left > 0.0:
 		draw_arc(pos, (PLAYER_RADIUS + 10.0) * actor_scale, 0.0, TAU, 40, Color(0.333, 0.867, 0.878, 0.55), 3.0 * actor_scale, true)
-	var forward := Vector2.RIGHT.rotated(player_facing)
-	var side := forward.orthogonal()
-	var shape := PackedVector2Array([pos + forward * 24.0 * actor_scale, pos - forward * 15.0 * actor_scale + side * 13.0 * actor_scale, pos - forward * 11.0 * actor_scale, pos - forward * 15.0 * actor_scale - side * 13.0 * actor_scale])
-	draw_colored_polygon(shape, ORANGE_HOT if base_weapon_damage > 1 else ORANGE)
-	draw_polyline(PackedVector2Array([shape[0], shape[1], shape[2], shape[3], shape[0]]), ORANGE_HOT, 2.5 * actor_scale, true)
-	draw_circle(pos, 5.0 * actor_scale, WHITE)
+	var camera_transform := Transform2D(0.0, Vector2.ONE * _dialogue_camera_zoom(), 0.0, _dialogue_camera_origin(offset))
+	var player_transform := Transform2D(player_facing + PLAYER_ASSET_ROTATION_OFFSET, Vector2.ONE, 0.0, pos)
+	draw_set_transform_matrix(camera_transform * player_transform)
+	var texture_scale := PLAYER_ASSET_WIDTH * actor_scale / player_texture.get_width()
+	var texture_size := player_texture.get_size() * texture_scale
+	draw_texture_rect(player_texture, Rect2(-texture_size * 0.5, texture_size), false)
+	draw_set_transform_matrix(camera_transform)
 	if base_weapon_damage > 1:
 		draw_arc(pos, 10.0 * actor_scale, -0.65, 0.65, 16, LIME, 2.5 * actor_scale, true)
 	if base_weapon_fire_rate > GameMath.BASE_PLAYER_FIRE_RATE:

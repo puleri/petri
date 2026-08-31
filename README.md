@@ -2,7 +2,7 @@
 
 PETRI is a single-player, desktop-browser survival game built with Godot 4.7.2 and GDScript. Its main mode, **CULTURE WARS**, treats the discourse as the infection: ragebait germs split into louder opposing takes, platform elites monetize both sides, and the antibiotic protagonist notices who profits. The satire targets inflammatory rhetoric and its incentives—not demographic groups or ordinary people.
 
-You are an antibiotic particle inside a bounded culture dish: move with inertia, shoot germs, manage a rechargeable boost, and survive the debris created by splitting threats. Pulsing membrane auras telegraph every newly entering germ. When a germ or the player speaks, gameplay freezes for a brief cut scene that eases toward the speaker, types the line into a speech bubble, pulses the speaker inward, then returns to the full arena. Cut scenes are globally limited to roughly 2.5 per minute; lines up to four words receive 2.2 seconds, with another 0.25 seconds for each additional word. Scheduled gold tank elites drop permanent automatic upgrades through item-specific pickup auras. Reaching 50,000 points locks the spawn pipeline until the dish is clear, then introduces a one-time dash boss. Defeating it wipes collected abilities and upgrades the base weapon to double-damage pellets. At 100,000 points, a stronger boss adds a telegraphed radial debris volley to the same dash attack; defeating it resets abilities again and overclocks the double-damage weapon from six to nine volleys per second for the rest of the run.
+You are a soft-edged antibiotic arrow inside a bounded culture dish: move with inertia, shoot germs, manage a rechargeable boost, and survive the debris created by splitting threats. Every germ uses a four-layer specimen illustration, hue-shifted and scaled for its tier; surviving hits send a 0.3-second coral flash and ripple through those layers. Pulsing membrane auras telegraph every newly entering germ. When a germ or the player speaks, gameplay freezes for a brief cut scene that eases toward the speaker, types the line into a speech bubble, pulses the speaker inward, then returns to the full arena. Cut scenes are globally limited to roughly 2.5 per minute; lines up to four words receive 2.2 seconds, with another 0.25 seconds for each additional word. Scheduled gold tank elites drop permanent automatic upgrades through item-specific pickup auras. Reaching 50,000 points locks the spawn pipeline until the dish is clear, then introduces a one-time dash boss. Defeating it wipes collected abilities and upgrades the base weapon to double-damage pellets. At 100,000 points, a stronger boss adds a telegraphed radial debris volley to the same dash attack; defeating it resets abilities again and overclocks the double-damage weapon from six to nine volleys per second for the rest of the run.
 
 ## Controls
 
@@ -33,7 +33,7 @@ The project uses the Compatibility renderer and contains no threaded gameplay or
 godot --headless --path . --script tests/run_tests.gd
 ```
 
-The deterministic suite covers boost timing, combo scoring, germ splits, dialogue cut-scene sequencing, elite cadence, both milestone boss lifecycles, dash and radial-volley behavior, pickup lifecycle, both ability resets and weapon rewards, all six item effects, overcharge, difficulty ramping, persistence, collision outcomes, fixed pools, and scene loading.
+The deterministic suite covers boost timing, combo scoring, germ splits, layered germ texture caches and hit reactions, Reduced Motion behavior, dialogue cut-scene sequencing, elite cadence, both milestone boss lifecycles, dash and radial-volley behavior, pickup lifecycle, both ability resets and weapon rewards, all six item effects, overcharge, difficulty ramping, persistence, collision outcomes, fixed pools, and scene loading.
 
 ## Export for web
 
@@ -66,7 +66,7 @@ No remote is created until a repository URL is supplied.
 
 ## Architecture
 
-- `scripts/petri_game.gd` — pooled simulation, input, responsive rendering, menus, HUD, settings, and run lifecycle
+- `scripts/petri_game.gd` — pooled simulation, layered germ rendering, input, responsive layout, menus, HUD, settings, and run lifecycle
 - `scripts/culture_war_dialogue.gd` — deterministic Culture Wars topics, opposing stances, escalation lines, and protagonist/elite commentary
 - `scripts/game_math.gd` — deterministic gameplay rules used by runtime and tests
 - `scripts/item_data.gd` — public item enum, display specifications, and level curves
