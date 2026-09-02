@@ -16,6 +16,7 @@ func _run_suite() -> void:
 	_test_spawn_ramp()
 	_test_persistence()
 	_test_collisions()
+	_test_player_health()
 	_test_resources_and_scene()
 	_test_germ_assets_and_hit_reactions()
 	_test_culture_wars_dialogue()
@@ -26,6 +27,8 @@ func _run_suite() -> void:
 	_test_item_combat_effects()
 	_test_boss_encounter_and_reward()
 	_test_second_boss_encounter_and_reward()
+	_test_third_boss_encounter_and_reward()
+	_test_boon_system()
 	_test_long_run_pool_stability()
 	await process_frame
 	await process_frame
@@ -69,6 +72,7 @@ func _test_scoring_and_combo() -> void:
 	_check(GameMath.combo_after_kill(5, 0.25) == 5, "combo caps at x5")
 	_check(GameMath.combo_after_kill(4, 2.01) == 1, "combo resets after two seconds")
 	_check(GameMath.awarded_score(100, 4) == 400, "score applies combo multiplier")
+	_check(GameMath.awarded_score(100, 4, 1.5) == 600 and GameMath.awarded_score(100, 4, 2.0) == 800, "boon multiplier applies after combo scoring")
 
 
 func _test_splitting() -> void:
@@ -78,12 +82,14 @@ func _test_splitting() -> void:
 	var elite := GameMath.split_result(GermData.GermTier.ELITE)
 	var boss := GameMath.split_result(GermData.GermTier.BOSS)
 	var boss_2 := GameMath.split_result(GermData.GermTier.BOSS_2)
+	var boss_3 := GameMath.split_result(GermData.GermTier.BOSS_3)
 	_check(int(large.children) == 2 and int(large.fragments) == 3 and int(large.child_tier) == GermData.GermTier.MEDIUM, "large germ split recipe")
 	_check(int(medium.children) == 2 and int(medium.fragments) == 2 and int(medium.child_tier) == GermData.GermTier.SMALL, "medium germ split recipe")
 	_check(int(small.children) == 0 and int(small.fragments) == 1, "small germ split recipe")
 	_check(int(elite.children) == 0 and int(elite.fragments) == 4, "elite destruction recipe")
 	_check(int(boss.children) == 0 and int(boss.fragments) == 0, "boss destruction creates no lingering hazards")
 	_check(int(boss_2.children) == 0 and int(boss_2.fragments) == 0, "second boss destruction creates no lingering hazards")
+	_check(int(boss_3.children) == 0 and int(boss_3.fragments) == 0, "third boss destruction creates no lingering hazards")
 
 
 func _test_spawn_ramp() -> void:
@@ -93,8 +99,9 @@ func _test_spawn_ramp() -> void:
 	_check(is_equal_approx(GameMath.spawn_interval(0.0), 1.3), "spawn interval starts at 1.3 seconds")
 	_check(is_equal_approx(GameMath.spawn_interval(180.0), 0.45), "spawn interval reaches 0.45 seconds")
 	_check(is_equal_approx(GameMath.threat_speed_multiplier(300.0), 1.5), "threat speed caps at plus fifty percent")
-	_check(is_equal_approx(GameMath.ELITE_FIRST_SPAWN, 10.0) and is_equal_approx(GameMath.ELITE_SPAWN_INTERVAL, 15.0), "elite cadence constants")
-	_check(GameMath.BOSS_SCORE_THRESHOLD == 50000 and GameMath.BOSS_2_SCORE_THRESHOLD == 100000 and GameMath.MAX_GERMS == 37, "boss thresholds and shared reserved pool size")
+	_check(is_equal_approx(GameMath.ELITE_FIRST_SPAWN, 5.0) and is_equal_approx(GameMath.ELITE_SPAWN_INTERVAL, 10.0), "elite cadence remains unchanged")
+	_check(is_equal_approx(GameMath.BOSS_DASH_SPEED, 420.0), "boss dash speed remains unchanged")
+	_check(GameMath.BOSS_SCORE_THRESHOLD == 50000 and GameMath.BOSS_2_SCORE_THRESHOLD == 100000 and GameMath.BOSS_3_SCORE_THRESHOLD == 150000 and GameMath.BOSS_STAGE_COUNT == 3 and GameMath.MAX_GERMS == 37, "three boss thresholds and shared reserved pool size")
 	_check(is_equal_approx(GameMath.BASE_PLAYER_FIRE_RATE, 6.0) and is_equal_approx(GameMath.OVERCLOCKED_PLAYER_FIRE_RATE, 9.0), "base and overclocked fire rates")
 
 
@@ -117,8 +124,57 @@ func _test_persistence() -> void:
 func _test_collisions() -> void:
 	_check(not GameMath.membrane_is_lethal(239.9), "normal membrane impact rebounds")
 	_check(GameMath.membrane_is_lethal(240.1), "boost-speed membrane impact is lethal")
-	_check(not GameMath.hostile_collision_is_lethal(0.01), "spawn protection blocks hostile death")
-	_check(GameMath.hostile_collision_is_lethal(0.0), "hostile contact is lethal after protection")
+	_check(not GameMath.hostile_collision_is_lethal(0.01), "spawn protection blocks hostile damage")
+	_check(GameMath.hostile_collision_is_lethal(0.0), "hostile contact can damage after protection")
+
+
+func _test_player_health() -> void:
+	var game := _new_game()
+	game.call("_start_run")
+	_clear_combat(game)
+	game.call("_reset_dialogue")
+	var center := Vector2(game.get("arena_center"))
+	game.set("player_pos", center)
+	game.set("spawn_protection_left", 0.0)
+	game.call("_spawn_germ", GermData.GermTier.SMALL, center)
+	game.call("_resolve_hostile_hits")
+	_check(int(game.get("player_health")) == 2 and int(game.get("player_max_health")) == 3 and int(game.get("state")) == 2, "first hostile hit removes one of three health")
+	game.call("_resolve_hostile_hits")
+	_check(int(game.get("player_health")) == 2 and is_equal_approx(float(game.get("damage_protection_left")), 1.0), "post-hit grace prevents an overlap from draining multiple health")
+	game.set("damage_protection_left", 0.0)
+	game.call("_resolve_hostile_hits")
+	game.set("damage_protection_left", 0.0)
+	game.call("_resolve_hostile_hits")
+	_check(int(game.get("player_health")) == 0 and int(game.get("state")) == 5 and String(game.get("death_reason")) == "Germ contact", "third hostile hit ends the run")
+
+	game.call("_start_run")
+	_clear_combat(game)
+	game.set("spawn_protection_left", 0.0)
+	game.set("player_pos", center + Vector2.RIGHT * (float(game.get("arena_radius")) - 17.0))
+	game.set("player_velocity", Vector2.RIGHT * 300.0)
+	game.call("_resolve_player_membrane")
+	_check(int(game.get("player_health")) == 2 and int(game.get("state")) == 2, "lethal-speed membrane impact removes one health instead of ending a healthy run")
+	game.set("player_health", 1)
+	game.set("damage_protection_left", 0.0)
+	game.set("player_pos", center + Vector2.RIGHT * (float(game.get("arena_radius")) - 17.0))
+	game.set("player_velocity", Vector2.RIGHT * 300.0)
+	game.call("_resolve_player_membrane")
+	_check(int(game.get("state")) == 5 and String(game.get("death_reason")) == "Membrane impact", "membrane damage still ends the run at zero health")
+
+	game.call("_start_run")
+	var boon_levels: Array = game.get("boon_levels")
+	boon_levels[BoonData.BoonType.MAX_HEALTH] = 1
+	game.set("player_health", 1)
+	game.set("player_max_health", 5)
+	game.set("active_boss_stage", 0)
+	game.set("boss_encounter_phase", 3)
+	game.call("_complete_boss_encounter")
+	_check(int(game.get("player_health")) == 5 and int(game.get("player_max_health")) == 5 and int(boon_levels[BoonData.BoonType.MAX_HEALTH]) == 1 and int(game.get("boss_encounter_phase")) == 4, "boss victory restores boon-adjusted health without resetting boons")
+	var health_bounds: Rect2 = game.call("_health_bounds")
+	_check(health_bounds.size.x > 0.0 and health_bounds.size.y > 0.0, "health HUD reserves a responsive display area")
+	game.call("_start_run")
+	_check(int(game.get("player_health")) == 3 and int(game.get("player_max_health")) == 3 and is_zero_approx(float(game.get("damage_protection_left"))), "new run restores base health and clears damage grace")
+	_free_game(game)
 
 
 func _test_resources_and_scene() -> void:
@@ -128,16 +184,40 @@ func _test_resources_and_scene() -> void:
 	var elite: GermData = load("res://data/germ_elite.tres")
 	var boss: GermData = load("res://data/germ_boss.tres")
 	var boss_2: GermData = load("res://data/germ_boss_2.tres")
+	var boss_3: GermData = load("res://data/germ_boss_3.tres")
 	_check(large.hp == 3 and large.score == 100, "large germ data resource")
 	_check(medium.hp == 2 and medium.score == 50, "medium germ data resource")
 	_check(small.hp == 1 and small.score == 25, "small germ data resource")
 	_check(elite.hp == 18 and elite.radius == 66.0 and elite.score == 600 and elite.fragment_count == 4, "tank elite data resource")
-	_check(boss.hp == 240 and boss.radius == 88.0 and boss.score == 5000 and boss.fragment_count == 0, "fifty-thousand-point boss data resource")
-	_check(boss_2.hp == 600 and boss_2.radius == 100.0 and boss_2.score == 10000 and boss_2.fragment_count == 0, "hundred-thousand-point boss data resource")
+	_check(is_equal_approx(large.speed_min, 38.4) and is_equal_approx(large.speed_max, 60.8), "large germ movement is twenty percent slower")
+	_check(is_equal_approx(medium.speed_min, 52.8) and is_equal_approx(medium.speed_max, 78.4), "medium germ movement is twenty percent slower")
+	_check(is_equal_approx(small.speed_min, 70.4) and is_equal_approx(small.speed_max, 105.6), "small germ movement is twenty percent slower")
+	_check(is_equal_approx(elite.speed_min, 30.4) and is_equal_approx(elite.speed_max, 46.4), "elite germ movement is twenty percent slower")
+	_check(boss.hp == 240 and boss.radius == 88.0 and boss.score == 5000 and boss.fragment_count == 0 and is_equal_approx(boss.speed_min, 32.0) and is_equal_approx(boss.speed_max, 44.0), "fifty-thousand-point boss data resource remains unchanged")
+	_check(boss_2.hp == 600 and boss_2.radius == 100.0 and boss_2.score == 10000 and boss_2.fragment_count == 0 and is_equal_approx(boss_2.speed_min, 36.0) and is_equal_approx(boss_2.speed_max, 48.0), "hundred-thousand-point boss data resource remains unchanged")
+	_check(boss_3.hp == 2200 and boss_3.radius == 120.0 and boss_3.score == 25000 and boss_3.fragment_count == 0 and is_equal_approx(boss_3.speed_min, 38.0) and is_equal_approx(boss_3.speed_max, 48.0), "hundred-fifty-thousand-point boss data resource")
+	var game := _new_game()
+	_clear_combat(game)
+	var center := Vector2(game.get("arena_center"))
+	var spawned_speeds_ok := true
+	var spawn_specs: Array[GermData] = [large, medium, small, elite]
+	for tier in [GermData.GermTier.LARGE, GermData.GermTier.MEDIUM, GermData.GermTier.SMALL, GermData.GermTier.ELITE]:
+		game.call("_spawn_germ", tier, center + Vector2.RIGHT * 100.0)
+		var index := GameMath.ELITE_GERM_INDEX if tier == GermData.GermTier.ELITE else _first_active_germ(game, tier)
+		var spawned_speed := Vector2(Array(game.get("germs"))[index].vel).length()
+		var spec: GermData = spawn_specs[tier]
+		spawned_speeds_ok = spawned_speeds_ok and spawned_speed >= spec.speed_min and spawned_speed <= spec.speed_max and is_equal_approx(float(Array(game.get("germs"))[index].move_speed), spawned_speed)
+	_check(spawned_speeds_ok, "fresh regular and elite spawns use the reduced resource ranges")
 	_check(load("res://assets/figma/petri-logo.png") != null, "Figma PETRI logo loads")
 	var player_texture := load("res://assets/Specimen/P1/P1.png") as Texture2D
 	_check(player_texture != null and player_texture.get_size() == Vector2(226.0, 157.0), "soft-edged P1 player texture loads at its source size")
 	_check(load("res://scenes/main.tscn") != null, "main scene loads")
+	var draw_order: Array = game.get_script().get_script_constant_map().get("GERM_VISUAL_DRAW_ORDER", [])
+	var smallest_on_top := draw_order == [GermData.GermTier.BOSS_3, GermData.GermTier.BOSS_2, GermData.GermTier.BOSS, GermData.GermTier.ELITE, GermData.GermTier.LARGE, GermData.GermTier.MEDIUM, GermData.GermTier.SMALL]
+	for i in range(1, draw_order.size()):
+		smallest_on_top = smallest_on_top and game.get("germ_specs")[int(draw_order[i - 1])].radius >= game.get("germ_specs")[int(draw_order[i])].radius
+	_check(smallest_on_top, "germs render from largest to smallest before debris")
+	_free_game(game)
 
 
 func _test_germ_assets_and_hit_reactions() -> void:
@@ -153,10 +233,11 @@ func _test_germ_assets_and_hit_reactions() -> void:
 			for texture in Array(tier_layers):
 				var cached_texture := texture as Texture2D
 				mipmaps_complete = mipmaps_complete and cached_texture != null and cached_texture.get_image().has_mipmaps()
-	_check(cache_complete, "all six germ tiers cache four layered Meeboid textures")
+	_check(cache_complete, "all seven germ tiers cache four layered Meeboid textures")
 	_check(mipmaps_complete, "generated germ textures include mipmaps for small tiers")
 	_check(Color(game.call("_germ_palette_color", GermData.GermTier.LARGE)).is_equal_approx(Color("55DDE0")) and Color(game.call("_germ_palette_color", GermData.GermTier.SMALL)).is_equal_approx(Color("55DDE0")), "large and small germs use the cyan body palette")
 	_check(Color(game.call("_germ_palette_color", GermData.GermTier.MEDIUM)).is_equal_approx(Color("EFCEFD")) and Color(game.call("_germ_palette_color", GermData.GermTier.ELITE)).is_equal_approx(Color("FF9E73")), "medium and elite germs use lavender and orange palettes")
+	_check(Color(game.call("_germ_palette_color", GermData.GermTier.BOSS_3)).is_equal_approx(Color("1B0D26")), "third boss uses the midnight-purple body palette")
 
 	var center := Vector2(game.get("arena_center"))
 	game.call("_spawn_germ", GermData.GermTier.ELITE, center)
@@ -388,7 +469,7 @@ func _test_elite_and_pickup_flow() -> void:
 	var elite_warnings := 0
 	for warning in Array(game.get("spawn_warnings")):
 		if int(warning.tier) == GermData.GermTier.ELITE: elite_warnings += 1
-	_check(elite_warnings == 1 and is_equal_approx(float(game.get("elite_timer")), 15.0), "elite queues at scheduled cadence")
+	_check(elite_warnings == 1 and is_equal_approx(float(game.get("elite_timer")), GameMath.ELITE_SPAWN_INTERVAL), "elite queues at scheduled cadence")
 	_check(is_equal_approx(float(Array(game.get("spawn_warnings"))[0].duration), 2.5), "germ entry aura uses the configured duration")
 	game.call("_update_spawn_warnings", 2.501)
 	var germ_pool: Array = game.get("germs")
@@ -421,8 +502,9 @@ func _test_elite_and_pickup_flow() -> void:
 	_check(clamped.distance_to(Vector2(game.get("arena_center"))) <= float(game.get("arena_radius")) - 29.99, "item drops clamp inside membrane")
 	game.call("_spawn_germ", GermData.GermTier.ELITE, Vector2(game.get("player_pos")))
 	game.set("spawn_protection_left", 0.0)
+	game.set("player_health", 1)
 	game.call("_resolve_hostile_hits")
-	_check(int(game.get("state")) == 5 and String(game.get("death_reason")) == "Germ contact", "elite contact is lethal")
+	_check(int(game.get("state")) == 5 and String(game.get("death_reason")) == "Germ contact", "elite contact removes the final health")
 	_free_game(game)
 
 
@@ -611,7 +693,28 @@ func _test_boss_encounter_and_reward() -> void:
 			turret_shot_removed = false
 	_check(levels_cleared and int(game.get("overcharge_item")) == -1 and ability_fields_cleared and is_inf(float(game.get("aoe_timer"))), "boss reward performs the full clean ability reset")
 	_check(old_player_shot_preserved and turret_shot_removed, "reset removes turret shots without upgrading pellets already in flight")
-	_check(int(game.get("base_weapon_damage")) == 2 and is_equal_approx(float(game.get("base_weapon_fire_rate")), 6.0) and int(game.get("bosses_defeated")) == 1 and int(game.get("boss_encounter_phase")) == 0 and bool(game.call("_normal_spawning_enabled")) and is_equal_approx(float(game.get("spawn_timer")), GameMath.spawn_interval(float(game.get("run_time")))) and is_equal_approx(float(game.get("elite_timer")), 15.0), "first boss grants two-damage shots and resumes survival cadence")
+	var choices: Array = game.get("boon_choices")
+	var offered_types: Array[int] = []
+	for choice in choices:
+		if bool(choice.active): offered_types.append(int(choice.boon_type))
+	_check(int(game.get("base_weapon_damage")) == 2 and is_equal_approx(float(game.get("base_weapon_fire_rate")), 6.0) and int(game.get("bosses_defeated")) == 1 and int(game.get("boss_encounter_phase")) == 4 and not bool(game.call("_normal_spawning_enabled")) and offered_types.size() == 3 and offered_types[0] != offered_types[1] and offered_types[0] != offered_types[2] and offered_types[1] != offered_types[2], "first boss grants two-damage shots and opens three distinct boon choices")
+	var frozen_run_time := float(game.get("run_time"))
+	var preserved_shot_life := -1.0
+	for projectile in Array(game.get("pellets")):
+		if bool(projectile.active) and int(projectile.owner) == 0:
+			preserved_shot_life = float(projectile.life)
+			break
+	game.set("player_pos", Vector2(choices[0].pos))
+	game.call("_update_run", 1.99)
+	var still_locked := int(game.get("boss_encounter_phase")) == 4
+	game.call("_update_run", 0.01)
+	var shot_still_frozen := true
+	for projectile in Array(game.get("pellets")):
+		if bool(projectile.active) and int(projectile.owner) == 0 and preserved_shot_life >= 0.0:
+			shot_still_frozen = is_equal_approx(float(projectile.life), preserved_shot_life)
+			break
+	_check(still_locked and is_equal_approx(float(game.get("run_time")), frozen_run_time) and shot_still_frozen, "boon lockout freezes run time and hazards for exactly two seconds")
+	_check(int(game.get("boss_encounter_phase")) == 0 and bool(game.call("_normal_spawning_enabled")) and is_equal_approx(float(game.get("spawn_timer")), GameMath.spawn_interval(float(game.get("run_time")))) and is_equal_approx(float(game.get("elite_timer")), GameMath.ELITE_SPAWN_INTERVAL), "touching an unlocked boon resumes survival with a fresh elite timer")
 
 	_clear_projectiles(game)
 	levels[ItemData.ItemType.SPREAD] = 2
@@ -640,8 +743,9 @@ func _test_boss_encounter_and_reward() -> void:
 	_clear_hostiles(game)
 	game.call("_spawn_germ", GermData.GermTier.BOSS, Vector2(game.get("player_pos")))
 	game.set("spawn_protection_left", 0.0)
+	game.set("player_health", 1)
 	game.call("_resolve_hostile_hits")
-	_check(int(game.get("state")) == 5 and String(game.get("death_reason")) == "Germ contact", "boss contact remains lethal")
+	_check(int(game.get("state")) == 5 and String(game.get("death_reason")) == "Germ contact", "boss contact removes the final health")
 	_free_game(game)
 
 
@@ -719,6 +823,7 @@ func _test_second_boss_encounter_and_reward() -> void:
 	_check(not bool(Array(game.get("debris"))[expiring_index].active), "volley debris expires after six-second lifetime")
 	var destructible_index := _active_debris_indices(game, 1)[0]
 	var destructible_pos := Vector2(Array(game.get("debris"))[destructible_index].pos)
+	boss_pool[GameMath.BOSS_GERM_INDEX].pos = center + Vector2.LEFT * 190.0
 	game.set("score", 0)
 	game.set("combo", 1)
 	game.set("last_kill_time", -999.0)
@@ -738,7 +843,9 @@ func _test_second_boss_encounter_and_reward() -> void:
 	var levels_cleared := true
 	for level in levels: levels_cleared = levels_cleared and int(level) == 0
 	_check(volley_cleared and levels_cleared and int(game.get("overcharge_item")) == -1, "second boss reward clears volley debris and resets abilities")
-	_check(int(game.get("base_weapon_damage")) == 2 and is_equal_approx(float(game.get("base_weapon_fire_rate")), 9.0) and is_equal_approx(float(game.call("_player_fire_interval")), 1.0 / 9.0) and int(game.get("bosses_defeated")) == 2 and int(game.get("boss_encounter_phase")) == 4 and bool(game.call("_normal_spawning_enabled")), "second boss reward overclocks fire rate and completes progression")
+	_check(int(game.get("base_weapon_damage")) == 2 and is_equal_approx(float(game.get("base_weapon_fire_rate")), 9.0) and is_equal_approx(float(game.call("_player_fire_interval")), 1.0 / 9.0) and int(game.get("bosses_defeated")) == 2 and int(game.get("boss_encounter_phase")) == 4 and not bool(game.call("_normal_spawning_enabled")), "second boss reward overclocks fire rate and waits for its boon choice")
+	game.set("boon_selection_lock_left", 0.0)
+	_check(bool(game.call("_collect_boon_choice", 0)) and int(game.get("boss_encounter_phase")) == 0 and bool(game.call("_normal_spawning_enabled")), "second boss resumes survival after its boon while the third milestone remains available")
 	_clear_projectiles(game)
 	levels[ItemData.ItemType.SPREAD] = 2
 	levels[ItemData.ItemType.RICOCHET] = 2
@@ -750,8 +857,9 @@ func _test_second_boss_encounter_and_reward() -> void:
 			overclocked_shots += 1
 			overclocked_curve_ok = overclocked_curve_ok and int(projectile.damage) == 2 and int(projectile.bounces) == 2
 	_check(overclocked_shots == 5 and overclocked_curve_ok and is_equal_approx(float(game.get("fire_cooldown")), 1.0 / 9.0), "overclocked spread and ricochet preserve two-damage scaling")
-	game.call("_award_kill", 100000, center)
-	_check(int(game.get("bosses_defeated")) == 2 and int(game.get("boss_encounter_phase")) == 4, "both completed boss stages cannot retrigger")
+	game.set("score", GameMath.BOSS_3_SCORE_THRESHOLD - 100)
+	game.call("_try_begin_next_boss_encounter")
+	_check(int(game.get("bosses_defeated")) == 2 and int(game.get("boss_encounter_phase")) == 0, "third boss remains locked below one hundred fifty thousand")
 	game.call("_start_run")
 	_check(int(game.get("base_weapon_damage")) == 1 and is_equal_approx(float(game.get("base_weapon_fire_rate")), 6.0) and int(game.get("bosses_defeated")) == 0, "new run removes the fire-rate overclock")
 	_free_game(game)
@@ -768,16 +876,304 @@ func _test_second_boss_encounter_and_reward() -> void:
 	chain_game.call("_update_spawn_warnings", 2.501)
 	chain_game.call("_reset_dialogue")
 	chain_game.call("_damage_germ", GameMath.BOSS_GERM_INDEX, 240)
-	_check(int(chain_game.get("bosses_defeated")) == 1 and int(chain_game.get("active_boss_stage")) == 1 and int(chain_game.get("boss_encounter_phase")) == 1, "crossed hundred-thousand threshold chains into second cleanup after first reward")
+	_check(int(chain_game.get("bosses_defeated")) == 1 and int(chain_game.get("active_boss_stage")) == -1 and int(chain_game.get("boss_encounter_phase")) == 4, "crossed hundred-thousand threshold waits for the first boon choice")
+	chain_game.set("boon_selection_lock_left", 0.0)
+	chain_game.call("_collect_boon_choice", 0)
+	_check(int(chain_game.get("active_boss_stage")) == 1 and int(chain_game.get("boss_encounter_phase")) == 1, "crossed hundred-thousand threshold chains after the first boon is chosen")
 	_clear_hostiles(chain_game)
 	chain_game.call("_spawn_germ", GermData.GermTier.BOSS_2, center)
 	chain_game.call("_spawn_boss_volley", center, 0.0)
 	var lethal_fragment := _active_debris_indices(chain_game, 1)[0]
 	chain_game.set("player_pos", Vector2(Array(chain_game.get("debris"))[lethal_fragment].pos))
 	chain_game.set("spawn_protection_left", 0.0)
+	chain_game.set("player_health", 1)
 	chain_game.call("_resolve_hostile_hits")
-	_check(int(chain_game.get("state")) == 5 and String(chain_game.get("death_reason")) == "Debris contact", "second-boss volley debris remains lethal")
+	_check(int(chain_game.get("state")) == 5 and String(chain_game.get("death_reason")) == "Debris contact", "second-boss volley debris removes the final health")
 	_free_game(chain_game)
+
+
+func _test_third_boss_encounter_and_reward() -> void:
+	var game := _new_game()
+	game.call("_start_run")
+	_clear_combat(game)
+	game.call("_reset_dialogue")
+	game.set("spawn_protection_left", 9999.0)
+	game.set("bosses_defeated", 2)
+	game.set("base_weapon_damage", 2)
+	game.set("base_weapon_fire_rate", GameMath.OVERCLOCKED_PLAYER_FIRE_RATE)
+	var center := Vector2(game.get("arena_center"))
+	Array(game.get("debris"))[0] = {"active": true, "pos": center + Vector2.UP * 70.0, "vel": Vector2.ZERO, "life": 10.0, "angle": 0.0, "spin": 0.0, "hitter_cooldown": 0.0, "goo_hit_cooldown": 0.0, "freeze_left": 0.0, "source": 0, "bounces": -1}
+	game.set("score", GameMath.BOSS_3_SCORE_THRESHOLD - 25)
+	game.set("combo", 1)
+	game.set("last_kill_time", -999.0)
+	game.call("_award_kill", 25, center)
+	_check(int(game.get("boss_encounter_phase")) == 1 and int(game.get("active_boss_stage")) == 2, "one hundred fifty thousand enters the third cleanup stage")
+	game.call("_update_boss_encounter")
+	_check(Array(game.get("spawn_warnings")).is_empty(), "third boss waits for debris cleanup")
+	Array(game.get("debris"))[0].active = false
+	game.call("_update_boss_encounter")
+	var third_warning_ok := Array(game.get("spawn_warnings")).size() == 1 and int(Array(game.get("spawn_warnings"))[0].tier) == GermData.GermTier.BOSS_3
+	_check(third_warning_ok and int(game.get("boss_encounter_phase")) == 2, "cleared dish queues the third boss telegraph")
+	game.call("_update_spawn_warnings", 2.501)
+	var boss_pool: Array = game.get("germs")
+	var boss: Dictionary = boss_pool[GameMath.BOSS_GERM_INDEX]
+	_check(bool(boss.active) and int(boss.tier) == GermData.GermTier.BOSS_3 and int(boss.hp) == 2200 and int(game.get("boss_encounter_phase")) == 3, "third boss reuses the dedicated boss slot")
+	_check(is_equal_approx(float(boss.dash_timer), GameMath.BOSS_INITIAL_DASH_DELAY) and is_equal_approx(float(boss.volley_timer), GameMath.BOSS_VOLLEY_INITIAL_DELAY) and is_equal_approx(float(boss.ring_timer), GameMath.BOSS_RING_INITIAL_DELAY), "third boss starts all three attack clocks with deterministic delays")
+	game.call("_reset_dialogue")
+
+	boss_pool[GameMath.BOSS_GERM_INDEX].dash_timer = 0.0
+	boss_pool[GameMath.BOSS_GERM_INDEX].volley_timer = 0.0
+	boss_pool[GameMath.BOSS_GERM_INDEX].ring_timer = 0.0
+	game.call("_update_germs", 0.0)
+	boss = boss_pool[GameMath.BOSS_GERM_INDEX]
+	_check(int(boss.dash_phase) == 1 and is_zero_approx(float(boss.volley_timer)) and is_zero_approx(float(boss.ring_timer)), "third boss gives dash priority when all attacks are ready")
+	game.call("_update_germs", 0.2)
+	boss = boss_pool[GameMath.BOSS_GERM_INDEX]
+	_check(is_zero_approx(float(boss.volley_timer)) and is_zero_approx(float(boss.ring_timer)), "volley and ring clocks pause during the dash warning")
+	boss_pool[GameMath.BOSS_GERM_INDEX].dash_phase = 0
+	boss_pool[GameMath.BOSS_GERM_INDEX].dash_timer = 10.0
+	boss_pool[GameMath.BOSS_GERM_INDEX].volley_timer = 0.0
+	boss_pool[GameMath.BOSS_GERM_INDEX].ring_timer = 0.0
+	game.call("_update_germs", 0.0)
+	boss = boss_pool[GameMath.BOSS_GERM_INDEX]
+	_check(int(boss.dash_phase) == 3 and is_zero_approx(float(boss.ring_timer)), "third boss gives the radial volley priority over the ring")
+	boss_pool[GameMath.BOSS_GERM_INDEX].volley_timer = 0.0
+	game.call("_update_germs", 0.0)
+	var third_volley := _active_debris_indices(game, 1)
+	_check(third_volley.size() == GameMath.BOSS_VOLLEY_COUNT, "third boss retains the ten-projectile radial volley")
+
+	boss_pool[GameMath.BOSS_GERM_INDEX].dash_phase = 0
+	boss_pool[GameMath.BOSS_GERM_INDEX].dash_timer = 10.0
+	boss_pool[GameMath.BOSS_GERM_INDEX].volley_timer = 10.0
+	boss_pool[GameMath.BOSS_GERM_INDEX].ring_timer = 0.0
+	game.set("player_pos", center + Vector2.RIGHT * 100.0)
+	game.call("_update_germs", 0.0)
+	boss = boss_pool[GameMath.BOSS_GERM_INDEX]
+	_check(int(boss.dash_phase) == 4 and is_equal_approx(float(boss.ring_timer), GameMath.BOSS_RING_WARNING_SECONDS) and is_equal_approx(float(boss.ring_angle), 0.0), "ring warning locks a sixty-degree safe wedge toward the player")
+	game.set("player_pos", center + Vector2.UP * 100.0)
+	game.call("_update_germs", 0.5)
+	boss = boss_pool[GameMath.BOSS_GERM_INDEX]
+	_check(int(boss.dash_phase) == 4 and is_equal_approx(float(boss.ring_angle), 0.0) and is_equal_approx(float(boss.dash_timer), 10.0) and is_equal_approx(float(boss.volley_timer), 10.0), "ring direction stays locked and pauses the other attack clocks")
+	var saved_data: Dictionary = game.get("saved")
+	saved_data.reduced_motion = true
+	boss_pool[GameMath.BOSS_GERM_INDEX].freeze_left = 1.0
+	var warning_before_freeze := float(boss_pool[GameMath.BOSS_GERM_INDEX].ring_timer)
+	game.call("_update_germs", 0.2)
+	boss = boss_pool[GameMath.BOSS_GERM_INDEX]
+	_check(is_equal_approx(float(boss.ring_timer), warning_before_freeze - 0.1), "freeze slows the reduced-motion ring warning to half speed")
+	boss_pool[GameMath.BOSS_GERM_INDEX].freeze_left = 0.0
+	game.call("_update_germs", float(boss.ring_timer) + 0.01)
+	boss = boss_pool[GameMath.BOSS_GERM_INDEX]
+	_check(int(boss.dash_phase) == 5 and is_equal_approx(float(boss.ring_timer), GameMath.BOSS_RING_ACTIVE_SECONDS), "ring warning transitions into the timed contraction")
+	_check(is_equal_approx(float(game.call("_boss_ring_radius", GameMath.BOSS_RING_ACTIVE_SECONDS)), float(game.get("arena_radius"))) and is_zero_approx(float(game.call("_boss_ring_radius", 0.0))), "contracting ring travels from the membrane to the arena center")
+
+	var arena_radius := float(game.get("arena_radius"))
+	var crossing_start_seconds := GameMath.BOSS_RING_ACTIVE_SECONDS * 140.0 / arena_radius
+	var crossing_delta := GameMath.BOSS_RING_ACTIVE_SECONDS * 80.0 / arena_radius
+	game.set("spawn_protection_left", 0.0)
+	game.set("damage_protection_left", 0.0)
+	game.set("dash_left", 0.0)
+	game.set("invincibility_left", 0.0)
+	game.set("player_health", 3)
+	game.set("player_pos", center + Vector2.UP * 100.0)
+	boss_pool[GameMath.BOSS_GERM_INDEX].dash_phase = 5
+	boss_pool[GameMath.BOSS_GERM_INDEX].ring_timer = crossing_start_seconds
+	boss_pool[GameMath.BOSS_GERM_INDEX].ring_angle = 0.0
+	boss_pool[GameMath.BOSS_GERM_INDEX].ring_hit_player = false
+	game.call("_update_germs", crossing_delta)
+	_check(int(game.get("player_health")) == 2 and bool(boss_pool[GameMath.BOSS_GERM_INDEX].ring_hit_player), "crossing the ring outside its wedge removes one health")
+	game.set("damage_protection_left", 0.0)
+	game.set("player_pos", center + Vector2.UP * 40.0)
+	game.call("_update_germs", crossing_delta * 0.5)
+	_check(int(game.get("player_health")) == 2, "one contracting ring cast cannot deal a second successful hit")
+
+	game.set("player_health", 3)
+	game.set("damage_protection_left", 0.0)
+	game.set("player_pos", center + Vector2.RIGHT * 100.0)
+	boss_pool[GameMath.BOSS_GERM_INDEX].dash_phase = 5
+	boss_pool[GameMath.BOSS_GERM_INDEX].ring_timer = crossing_start_seconds
+	boss_pool[GameMath.BOSS_GERM_INDEX].ring_angle = 0.0
+	boss_pool[GameMath.BOSS_GERM_INDEX].ring_hit_player = false
+	game.call("_update_germs", crossing_delta)
+	_check(int(game.get("player_health")) == 3 and not bool(boss_pool[GameMath.BOSS_GERM_INDEX].ring_hit_player), "the locked sixty-degree wedge is safe")
+	game.set("player_pos", center + Vector2.UP * 100.0)
+	for guard in ["spawn", "dash", "invincibility", "grace"]:
+		game.set("spawn_protection_left", 1.0 if guard == "spawn" else 0.0)
+		game.set("dash_left", 0.1 if guard == "dash" else 0.0)
+		game.set("invincibility_left", 0.1 if guard == "invincibility" else 0.0)
+		game.set("damage_protection_left", 0.1 if guard == "grace" else 0.0)
+		boss_pool[GameMath.BOSS_GERM_INDEX].dash_phase = 5
+		boss_pool[GameMath.BOSS_GERM_INDEX].ring_timer = crossing_start_seconds
+		boss_pool[GameMath.BOSS_GERM_INDEX].ring_hit_player = false
+		game.call("_update_germs", crossing_delta)
+	_check(int(game.get("player_health")) == 3, "spawn protection, Dash, Invincibility, and post-hit grace all guard against the ring")
+	game.set("spawn_protection_left", 9999.0)
+	game.set("dash_left", 0.0)
+	game.set("invincibility_left", 0.0)
+	game.set("damage_protection_left", 0.0)
+
+	var levels: Array = game.get("item_levels")
+	for i in levels.size(): levels[i] = ItemData.MAX_LEVEL
+	game.call("_start_overcharge", ItemData.ItemType.TURRET)
+	boss_pool[GameMath.BOSS_GERM_INDEX].hp = 1
+	game.call("_damage_germ", GameMath.BOSS_GERM_INDEX, 1)
+	var volley_cleared := _active_debris_indices(game, 1).is_empty()
+	var levels_cleared := true
+	for level in levels: levels_cleared = levels_cleared and int(level) == 0
+	_check(volley_cleared and levels_cleared and int(game.get("overcharge_item")) == -1, "third boss reward clears volley debris and performs the full ability reset")
+	_check(int(game.get("base_weapon_damage")) == 2 and is_equal_approx(float(game.get("base_weapon_fire_rate")), 9.0) and int(game.get("boss_health_bonus")) == 1 and int(game.get("player_health")) == 4 and int(game.get("player_max_health")) == 4, "third boss preserves the weapon and grants and fills one maximum health")
+	_check(int(game.get("bosses_defeated")) == 3 and int(game.get("boss_encounter_phase")) == 4 and not bool(game.call("_normal_spawning_enabled")), "third boss waits for a third boon choice before completing")
+	Array(game.get("boon_levels"))[BoonData.BoonType.MAX_HEALTH] = 1
+	game.call("_restore_player_health")
+	_check(int(game.get("player_health")) == 6 and int(game.get("player_max_health")) == 6, "third-boss health combines with the Max Health boon")
+	game.set("boon_selection_lock_left", 0.0)
+	_check(bool(game.call("_collect_boon_choice", 0)) and int(game.get("boss_encounter_phase")) == 5 and bool(game.call("_normal_spawning_enabled")) and is_equal_approx(float(game.get("elite_timer")), GameMath.ELITE_SPAWN_INTERVAL), "third boon resumes endless survival with every boss complete")
+	game.call("_award_kill", 200000, center)
+	_check(int(game.get("bosses_defeated")) == 3 and int(game.get("boss_encounter_phase")) == 5, "all three completed encounters cannot retrigger")
+	game.call("_start_run")
+	_check(int(game.get("boss_health_bonus")) == 0 and int(game.get("player_health")) == 3 and int(game.get("player_max_health")) == 3 and int(game.get("bosses_defeated")) == 0, "new run clears the third-boss health reward and progression")
+	_free_game(game)
+
+	var chain_game := _new_game()
+	chain_game.call("_start_run")
+	_clear_combat(chain_game)
+	chain_game.call("_reset_dialogue")
+	chain_game.set("score", GameMath.BOSS_3_SCORE_THRESHOLD)
+	chain_game.call("_try_begin_next_boss_encounter")
+	_check(int(chain_game.get("active_boss_stage")) == 0, "a score jump past all milestones still starts with boss one")
+	chain_game.set("active_boss_stage", 0)
+	chain_game.set("boss_encounter_phase", 3)
+	chain_game.call("_complete_boss_encounter")
+	chain_game.set("boon_selection_lock_left", 0.0)
+	chain_game.call("_collect_boon_choice", 0)
+	_check(int(chain_game.get("active_boss_stage")) == 1, "boss two chains only after the first boon choice")
+	chain_game.set("active_boss_stage", 1)
+	chain_game.set("boss_encounter_phase", 3)
+	chain_game.call("_complete_boss_encounter")
+	chain_game.set("boon_selection_lock_left", 0.0)
+	chain_game.call("_collect_boon_choice", 0)
+	_check(int(chain_game.get("active_boss_stage")) == 2 and int(chain_game.get("boss_encounter_phase")) == 1, "boss three chains only after the second boon choice")
+	_free_game(chain_game)
+
+
+func _test_boon_system() -> void:
+	var game := _new_game()
+	game.call("_start_run")
+	_clear_combat(game)
+	game.call("_reset_dialogue")
+	game.set("spawn_protection_left", 0.0)
+	var center := Vector2(game.get("arena_center"))
+	var initial_node_count := _count_nodes(game)
+	_check(BoonData.BoonType.size() == 9 and Array(game.get("boon_levels")).size() == 9, "boon data exposes nine run upgrades")
+	_check(Array(game.get("boon_choices")).size() == 3 and Array(game.get("goo_patches")).size() == 64, "boon choices and goo use fixed three and sixty-four slot pools")
+
+	var levels: Array = game.get("boon_levels")
+	game.set("boss_encounter_phase", 4)
+	game.set("boon_selection_lock_left", 0.0)
+	Array(game.get("boon_choices"))[0] = {"active": true, "boon_type": BoonData.BoonType.DASH_EVADE, "pos": center, "phase": 0.0}
+	game.call("_collect_boon_choice", 0)
+	game.set("boss_encounter_phase", 4)
+	game.set("boon_selection_lock_left", 0.0)
+	Array(game.get("boon_choices"))[0] = {"active": true, "boon_type": BoonData.BoonType.INVINCIBILITY, "pos": center, "phase": 0.0}
+	game.call("_collect_boon_choice", 0)
+	_check(int(game.get("active_space_boon")) == BoonData.BoonType.INVINCIBILITY and int(levels[BoonData.BoonType.DASH_EVADE]) == 1 and int(levels[BoonData.BoonType.INVINCIBILITY]) == 1, "a new Space boon replaces the active slot while retaining stored levels")
+	var incompatible_offer: Array = game.call("_generate_boon_offer")
+	_check(not incompatible_offer.has(BoonData.BoonType.SPEED_BOOSTS), "Speed Boosts is filtered when the equipped Space ability cannot use it")
+	game.set("boss_encounter_phase", 4)
+	game.set("boon_selection_lock_left", 0.0)
+	Array(game.get("boon_choices"))[0] = {"active": true, "boon_type": BoonData.BoonType.DASH_EVADE, "pos": center, "phase": 0.0}
+	game.call("_collect_boon_choice", 0)
+	_check(int(levels[BoonData.BoonType.DASH_EVADE]) == 2 and int(game.get("active_space_boon")) == BoonData.BoonType.DASH_EVADE, "repeated boons stack to level two and can be re-equipped")
+	game.set("boss_encounter_phase", 4)
+	game.set("boon_selection_lock_left", 0.0)
+	game.set("player_health", 1)
+	game.set("player_max_health", 3)
+	Array(game.get("boon_choices"))[0] = {"active": true, "boon_type": BoonData.BoonType.MAX_HEALTH, "pos": center, "phase": 0.0}
+	game.call("_collect_boon_choice", 0)
+	_check(int(levels[BoonData.BoonType.MAX_HEALTH]) == 1 and int(game.get("player_health")) == 5 and int(game.get("player_max_health")) == 5, "Max Health raises the player from three to five health and fills the new capacity")
+	var post_health_offer: Array = game.call("_generate_boon_offer")
+	_check(not post_health_offer.has(BoonData.BoonType.MAX_HEALTH), "the one-level Max Health boon leaves the offer pool after collection")
+
+	_check(is_equal_approx(BoonData.dash_speed(1), 600.0) and is_equal_approx(BoonData.dash_duration(1), 0.18) and is_equal_approx(BoonData.dash_cooldown(1), 2.5), "dash level one tuning")
+	_check(is_equal_approx(BoonData.dash_speed(2), 700.0) and is_equal_approx(BoonData.dash_duration(2), 0.22) and is_equal_approx(BoonData.dash_cooldown(2), 2.0), "dash level two tuning")
+	game.set("player_pos", center + Vector2.RIGHT * (float(game.get("arena_radius")) - 17.0))
+	game.set("player_velocity", Vector2.RIGHT * 700.0)
+	game.set("dash_direction", Vector2.RIGHT)
+	game.set("dash_left", 0.1)
+	game.call("_resolve_player_membrane")
+	_check(int(game.get("state")) == 2 and is_zero_approx(float(game.get("dash_left"))) and Vector2(game.get("player_velocity")).is_zero_approx(), "dash is invulnerable and ends safely at the membrane")
+
+	_clear_hostiles(game)
+	game.set("player_pos", center)
+	game.call("_spawn_germ", GermData.GermTier.SMALL, center)
+	game.set("invincibility_left", 1.0)
+	game.call("_resolve_hostile_hits")
+	game.set("player_pos", center + Vector2.RIGHT * (float(game.get("arena_radius")) + 20.0))
+	game.call("_resolve_player_membrane")
+	_check(int(game.get("state")) == 2 and Vector2(game.get("player_pos")).distance_to(center) > float(game.get("arena_radius")), "invincibility ignores hostile and membrane contact with pass-through")
+	_check(is_equal_approx(BoonData.invincibility_duration(1), 2.0) and is_equal_approx(BoonData.invincibility_cooldown(2), 10.0), "invincibility level timing")
+
+	_clear_hostiles(game)
+	game.set("player_pos", center)
+	levels[BoonData.BoonType.POINT_MULTIPLIER] = 1
+	game.set("score", 0)
+	game.set("combo", 1)
+	game.set("last_kill_time", -999.0)
+	game.call("_award_kill", 100, center)
+	_check(int(game.get("score")) == 150, "point multiplier increases future post-combo score")
+	_check(is_equal_approx(BoonData.movement_multiplier(1), 1.15) and is_equal_approx(BoonData.movement_multiplier(2), 1.3), "movement speed boon scales acceleration and maximum speed")
+	_check(is_equal_approx(BoonData.mobility_speed_multiplier(2), 1.3) and is_equal_approx(BoonData.mobility_duration_multiplier(2), 1.2) and is_equal_approx(BoonData.mobility_recharge_multiplier(2), 1.3), "Speed Boosts scales speed duration and recharge")
+
+	levels[BoonData.BoonType.POINT_MULTIPLIER] = 0
+	levels[BoonData.BoonType.GOO_TRAIL_BOOST] = 1
+	game.call("_spawn_goo_patch", center)
+	game.call("_spawn_germ", GermData.GermTier.SMALL, center)
+	game.call("_update_goo_patches", 0.0)
+	_check(not bool(Array(game.get("germs"))[0].active) and _active_goo_count(game) == 1, "goo patches damage a hostile and remain pooled")
+	game.call("_spawn_germ", GermData.GermTier.LARGE, center)
+	game.call("_update_goo_patches", 0.0)
+	var large_index := _first_active_germ(game, GermData.GermTier.LARGE)
+	var hp_after_first_goo := int(Array(game.get("germs"))[large_index].hp)
+	game.call("_update_goo_patches", 0.0)
+	_check(hp_after_first_goo == 2 and int(Array(game.get("germs"))[large_index].hp) == 2, "goo damage respects the per-hostile point-four-five-second cadence")
+	_check(is_equal_approx(BoonData.goo_radius(1), 24.0) and is_equal_approx(BoonData.goo_lifetime(2), 5.0) and is_equal_approx(BoonData.goo_interval(2), 0.12), "goo trail levels use the configured size lifetime and deposit cadence")
+
+	_clear_hostiles(game)
+	levels[BoonData.BoonType.FREEZE_AOE_SHOCK] = 1
+	game.set("player_pos", center)
+	game.call("_spawn_germ", GermData.GermTier.SMALL, center + Vector2.RIGHT * 80.0)
+	game.call("_spawn_germ", GermData.GermTier.BOSS, center + Vector2.LEFT * 80.0)
+	var regular_index := _first_active_germ(game, GermData.GermTier.SMALL)
+	var boss_index := GameMath.BOSS_GERM_INDEX
+	var regular_before := Vector2(Array(game.get("germs"))[regular_index].pos)
+	var boss_dash_before := float(Array(game.get("germs"))[boss_index].dash_timer)
+	Array(game.get("debris"))[0] = {"active": true, "pos": center, "vel": Vector2.RIGHT * 100.0, "life": 5.0, "angle": 0.0, "spin": 1.0, "hitter_cooldown": 0.0, "goo_hit_cooldown": 0.0, "freeze_left": 0.0, "source": 0, "bounces": -1}
+	game.call("_activate_freeze_shock")
+	game.call("_update_germs", 1.0)
+	game.call("_update_debris", 1.0)
+	_check(Vector2(Array(game.get("germs"))[regular_index].pos).is_equal_approx(regular_before) and is_equal_approx(float(Array(game.get("debris"))[0].life), 5.0), "freeze fully stops regular germs and debris")
+	_check(is_equal_approx(float(Array(game.get("germs"))[boss_index].dash_timer), boss_dash_before - 0.5), "freeze advances boss movement and attack timers at half speed")
+	_check(is_equal_approx(BoonData.freeze_radius(2), 220.0) and is_equal_approx(BoonData.freeze_duration(2), 4.0) and is_equal_approx(BoonData.freeze_cooldown(2), 8.0), "freeze level two tuning")
+
+	_clear_hostiles(game)
+	levels[BoonData.BoonType.CHARGED_BEAM] = 1
+	game.set("player_pos", center)
+	game.set("beam_direction", Vector2.RIGHT)
+	game.call("_spawn_germ", GermData.GermTier.BOSS, center + Vector2.RIGHT * 140.0)
+	var beam_boss_hp := int(Array(game.get("germs"))[GameMath.BOSS_GERM_INDEX].hp)
+	game.call("_damage_beam", 1)
+	game.call("_begin_charged_beam")
+	_check(int(Array(game.get("germs"))[GameMath.BOSS_GERM_INDEX].hp) == beam_boss_hp - 4 and is_equal_approx(float(game.get("beam_active_left")), 3.0), "charged beam deals level-one tick damage and lasts three seconds")
+	levels[BoonData.BoonType.CHARGED_BEAM] = 2
+	game.call("_damage_beam", 2)
+	_check(int(Array(game.get("germs"))[GameMath.BOSS_GERM_INDEX].hp) == beam_boss_hp - 10 and is_equal_approx(BoonData.beam_width(2), 24.0), "charged beam level two widens and deals six damage per tick")
+
+	game.call("_start_run")
+	var reset_levels := true
+	for level in Array(game.get("boon_levels")): reset_levels = reset_levels and int(level) == 0
+	_check(reset_levels and int(game.get("active_space_boon")) == BoonData.NO_BOON and _active_goo_count(game) == 0 and is_zero_approx(float(game.get("beam_active_left"))) and is_zero_approx(float(game.get("freeze_cooldown"))) and int(game.get("player_health")) == 3 and int(game.get("player_max_health")) == 3, "new runs clear boons and transient effects and restore base health")
+	_check(_count_nodes(game) == initial_node_count, "boon combat and selection add no runtime nodes")
+	_free_game(game)
 
 
 func _test_long_run_pool_stability() -> void:
@@ -820,6 +1216,7 @@ func _test_long_run_pool_stability() -> void:
 	_check(pellet_pool.size() == 240, "projectile pool remains fixed")
 	_check(Array(game.get("turrets")).size() == 3 and Array(game.get("mines")).size() == 48, "item combat pools remain fixed")
 	_check(Array(game.get("pickups")).size() == 4 and Array(game.get("item_warnings")).size() == 4, "pickup and item warning pools remain fixed")
+	_check(Array(game.get("boon_choices")).size() == 3 and Array(game.get("goo_patches")).size() == 64, "boon selection and goo pools remain fixed")
 	_check(_count_nodes(game) == initial_node_count, "ten-minute simulation leaks no nodes")
 	audio_manager.call("stop_all")
 	game.free()
@@ -856,6 +1253,13 @@ func _active_debris_indices(game: Node, source: int) -> Array[int]:
 		if bool(fragment.active) and int(fragment.get("source", 0)) == source:
 			indices.append(i)
 	return indices
+
+
+func _active_goo_count(game: Node) -> int:
+	var count := 0
+	for patch in Array(game.get("goo_patches")):
+		if bool(patch.active): count += 1
+	return count
 
 
 func _new_game() -> Node:

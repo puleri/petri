@@ -21,134 +21,230 @@ const INTENSITY_SMALL := 2
 const TOPICS := [
 	{
 		"opener": [
-			"THE PRONOUN BOX HAS GONE TOO FAR!",
-			"LANGUAGE IS THE FINAL BATTLEGROUND!",
+			"Does anyone know what to do if I see an antibiotic?... Oh god!",
+			"Fewf. You do not want to go in there.",
 		],
 		"medium": [
-			["WORDS HAVE ALWAYS MEANT WHAT I SAY!", "GRAMMAR IS NOT A FEELING!"],
-			["ONE WRONG WORD REVEALS EVERYTHING!", "YOUR BIO NEEDS MORE CONTEXT!"],
+			[
+				"I am gonna 3.14159 you!",
+				"Come here and give me a kiss!"
+			],
+			[
+				"hey!",
+				"uh oh."
+			],
 		],
 		"small": [
-			["COMMON SENSE! ALL CAPS!", "THE DICTIONARY IS ON MY SIDE!"],
-			["UPDATE YOUR VOCABULARY OR ELSE!", "EVERY TYPO IS A RED FLAG!"],
+			[
+				"Don't make me get the thermometer.",
+				"I know what a spleen is!"
+			],
+			[
+				"That's probably fine.",
+				"Wait. Do you smell pennies?"
+			],
 		],
 	},
 	{
 		"opener": [
-			"THIS BOOK WILL DECIDE THE CHILDREN!",
-			"THE LIBRARY HAS ENTERED THE WAR!",
+			"Who put a little receipt in this book?",
+			"Whoa. This one has a map at the beginning.",
 		],
 		"medium": [
-			["BAN IT FOR THE CHILDREN!", "A LIBRARY SHOULD NEVER CHALLENGE ME!"],
-			["READING IT IS RESISTANCE!", "MAKE EVERY BANNED BOOK REQUIRED!"],
+			[
+				"I've already read eleven pages!",
+				"Don't tell me what happens to Mr. Pickles."
+			],
+			[
+				"That's not a bookmark. That's trash.",
+				"I read the back. Basically finished it."
+			],
 		],
 		"small": [
-			["PAPERBACK PANIC!", "CLOSE THE LIBRARY!"],
-			["ANNOTATE THE REVOLUTION!", "PUT IT ON EVERY SYLLABUS!"],
+			[
+				"Chapter seven. Bad neighborhood.",
+				"This font is way too confident."
+			],
+			[
+				"Hang on, I'm sounding this one out.",
+				"Ooh. An appendix."
+			],
 		],
 	},
 	{
 		"opener": [
-			"SOMEONE IS WRONG ON THE INTERNET!",
-			"THE REPLY GUY DEMANDS A HEARING!",
+			"Somebody on the internet knows my name.",
+			"I clicked one thing and now everybody's mad.",
 		],
 		"medium": [
-			["FREE SPEECH MEANS YOU OWE ME A PLATFORM!", "CENSORSHIP IS WHEN YOU BLOCK ME!"],
-			["DISAGREEMENT IS BASICALLY VIOLENCE!", "ACCOUNTABILITY NEEDS NO APPEAL!"],
+			[
+				"I have seventeen tabs and they're all important.",
+				"Don't worry. I replied 'interesting.'"
+			],
+			[
+				"Turn the Wi-Fi off!",
+				"I accidentally liked something from 2018."
+			],
 		],
 		"small": [
-			["DEBATE ME OR YOU LOSE!", "UNBAN MY 47TH ACCOUNT!"],
-			["BLOCK FIRST! CONTEXT LATER!", "DELETE THE WHOLE THREAD!"],
+			[
+				"Refresh it again.",
+				"They can tell I'm online."
+			],
+			[
+				"Delete the evidence.",
+				"Put the phone face down."
+			],
 		],
 	},
 	{
 		"opener": [
-			"THE ALGORITHM DISCOVERED TRADITION!",
-			"DOMESTIC LIFE IS NOW A BATTLEGROUND!",
+			"I made soup but something has happened.",
+			"Nobody touch that container. It's thinking.",
 		],
 		"medium": [
-			["MY TRADITIONAL LIFE NEEDS A RING LIGHT!", "HISTORY AGREES WITH MY PODCAST!"],
-			["DOMESTICITY IS A STRUCTURAL EMERGENCY!", "TRADITION IS PEER PRESSURE FROM GHOSTS!"],
+			[
+				"The recipe said one clove. I used the bulb.",
+				"I don't measure vanilla because I'm not a coward."
+			],
+			[
+				"Why is the oven making that noise?",
+				"That's not burnt. That's the flavor arriving."
+			],
 		],
 		"small": [
-			["SUBMIT AND SUBSCRIBE!", "THE PAST HAD BETTER LIGHTING!"],
-			["DECONSTRUCT THE SOURDOUGH!", "YOUR APRON IS POLITICAL!"],
+			[
+				"Taste this and be brave.",
+				"More butter will fix it."
+			],
+			[
+				"It's supposed to look wet.",
+				"Put cheese on top. Quickly."
+			],
 		],
 	},
 	{
 		"opener": [
-			"HR HAS ENTERED THE DISCOURSE!",
-			"THE ORG CHART CLAIMS TO BE NEUTRAL!",
+			"Good news. There's another meeting.",
+			"Someone said 'quick sync' and locked the door.",
 		],
 		"medium": [
-			["MERITOCRACY BEGAN RIGHT AFTER I WON!", "MY ADVANTAGE IS JUST GOOD CULTURE!"],
-			["PUT JUSTICE IN THE QUARTERLY DECK!", "REPRESENTATION NEEDS A KPI!"],
+			[
+				"I made a spreadsheet about the spreadsheet.",
+				"Can everybody see my screen? Don't answer."
+			],
+			[
+				"I've been nodding for forty minutes.",
+				"I don't know who Kevin is but I agree with him."
+			],
 		],
 		"small": [
-			["SKILL ISSUE! SYSTEM SOLVED!", "IGNORE THE ORG CHART!"],
-			["MANDATORY BELONGING MODULE!", "DIVERSITY, NOW WITH DASHBOARDS!"],
+			[
+				"Circle it back.",
+				"Put it in the parking lot."
+			],
+			[
+				"Great point, whoever said that.",
+				"I'm double muted."
+			],
 		],
 	},
 	{
 		"opener": [
-			"BREAKFAST IS NOW A POLICY POSITION!",
-			"THE WEATHER HAS BECOME PERSONAL!",
+			"The weather app has betrayed me.",
+			"They said partly cloudy. This is extremely cloudy.",
 		],
 		"medium": [
-			["THEY'RE COMING FOR YOUR GAS STOVE!", "MY TRUCK IS A CONSTITUTIONAL RIGHT!"],
-			["YOUR BREAKFAST IS A POLICY FAILURE!", "CARBON-SCORE THE BRUNCH!"],
+			[
+				"I dressed for seventy-two!",
+				"The little sun icon lied to my face."
+			],
+			[
+				"I brought an umbrella so now it won't rain.",
+				"This wind has somewhere to be."
+			],
 		],
 		"small": [
-			["GRILL LIKE LIBERTY DEPENDS ON IT!", "OWN THE WEATHER!"],
-			["BAN THE BRUNCH!", "COMPOST YOUR PERSONALITY!"],
+			[
+				"I'm gonna fight the forecast.",
+				"Too many degrees."
+			],
+			[
+				"Here it comes!",
+				"Nope. Just a leaf."
+			],
 		],
 	},
 	{
 		"opener": [
-			"THE MACHINE MADE A PICTURE!",
-			"ART HAS ACCEPTED THE TERMS OF SERVICE!",
+			"The computer made a picture of my uncle.",
+			"Okay. Why does the robot know about lighting?",
 		],
 		"medium": [
-			["I TYPED THE PROMPT. I'M THE ARTIST!", "AUTOMATION DEMOCRATIZED MY TALENT!"],
-			["EVERY PIXEL IS STOLEN!", "YOUR MASTERPIECE HAS TERMS OF SERVICE!"],
+			[
+				"I typed 'cool wizard' and brother, look at him.",
+				"It gave the dog human teeth again."
+			],
+			[
+				"Why are there seven fingers?",
+				"Tell it fewer horses."
+			],
 		],
 		"small": [
-			["ONE CLICK! THIRTY YEARS OF CRAFT!", "SHIP THE SLOP!"],
-			["UNPLUG THE MUSE!", "CITE EVERY PIXEL!"],
+			[
+				"Make him shinier.",
+				"More fog!"
+			],
+			[
+				"That's not a hand.",
+				"Undo the baby."
+			],
 		],
 	},
 	{
 		"opener": [
-			"SELF-CARE HAS A SALES FUNNEL!",
-			"THE PODCAST CAN FIX YOUR PERSONALITY!",
+			"I've started waking up at five and it's horrible.",
+			"A man on a podcast told me to buy magnesium.",
 		],
 		"medium": [
-			["REAL MEN SUBSCRIBE TO MY COURSE!", "ALPHA STATUS BILLS MONTHLY!"],
-			["I HEALED MY TRAUMA WITH A BRAND DEAL!", "VULNERABILITY, LINK IN BIO!"],
+			[
+				"I took a cold shower and saw the face of God.",
+				"My morning routine is now four hours long."
+			],
+			[
+				"I bought a special cup for water.",
+				"Apparently I've been breathing wrong."
+			],
 		],
 		"small": [
-			["MONETIZE THE JAWLINE!", "COLD-PLUNGE THE FEELINGS!"],
-			["THERAPY-SPEAK SPEEDRUN!", "BOUNDARIES, BUT SPONSORED!"],
+			[
+				"Optimize me.",
+				"I'm full of electrolytes."
+			],
+			[
+				"Stretch your little legs.",
+				"Go stand near a window."
+			],
 		],
 	},
 ]
 
 const ELITE_LINES := [
-	"WE A/B TESTED BOTH SIDES.",
-	"ANGER RETAINS USERS.",
-	"YOUR ENEMY SAW THE SAME AD.",
-	"ENGAGEMENT UP. SOLIDARITY DOWN.",
-	"OUTRAGE CONVERTS.",
-	"DIVISION IS A GROWTH MARKET.",
+	"Excellent. They're arguing about soup.",
+	"Put another chair in there.",
+	"Somebody make the room slightly warmer.",
+	"They don't know about the second meeting.",
+	"Give them both a clipboard.",
+	"Perfect. Nobody knows why they're here.",
 ]
 
 const PLAYER_LINES := [
-	"Funny how wages never trend.",
-	"They sell both sides the megaphones.",
-	"Keep fighting sideways. The penthouse loves it.",
-	"Every outrage has a sponsor.",
-	"Culture war has one winner: the ruling class.",
-	"The feed gets rich. We get furious.",
+	"I think that guy just wants to go home.",
+	"Nobody here seems qualified for this.",
+	"I was told there would be snacks.",
+	"This feels like somebody else's problem.",
+	"I don't think we're supposed to be in this room.",
+	"Okay. I'm gonna go look for a bathroom.",
 ]
 
 

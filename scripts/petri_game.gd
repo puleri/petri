@@ -9,13 +9,15 @@ signal game_over(score: int, survival_time: float, reason: String)
 signal item_warning_started(item_type: int, position: Vector2)
 signal item_collected(item_type: int, level: int)
 signal item_overcharge_changed(item_type: int, seconds_left: float)
+signal boon_collected(boon_type: int, level: int)
+signal health_changed(current_health: int, maximum_health: int)
 
 enum AppState { MENU, HOW_TO, PLAYING, PAUSED, SETTINGS, GAME_OVER }
 enum ProjectileOwner { PLAYER, TURRET }
 enum DialogueSpeaker { NONE, GERM, PLAYER }
 enum DialogueCutscenePhase { NONE, ZOOM_IN, TALKING, ZOOM_OUT }
-enum BossEncounterPhase { INACTIVE, CLEANUP, WARNING, ACTIVE, COMPLETED }
-enum BossDashPhase { CHASE, WARNING, DASH, VOLLEY_WARNING }
+enum BossEncounterPhase { INACTIVE, CLEANUP, WARNING, ACTIVE, BOON_SELECTION, COMPLETED }
+enum BossDashPhase { CHASE, WARNING, DASH, VOLLEY_WARNING, RING_WARNING, RING_ACTIVE }
 enum DebrisSource { REGULAR, BOSS_VOLLEY }
 
 const BG := Color("#D7FFF8")
@@ -37,10 +39,14 @@ const BOSS_FILL := Color("#5D2E6E")
 const BOSS_CORE := Color("#3C2049")
 const BOSS_2_FILL := Color("#321A3C")
 const BOSS_2_CORE := Color("#FF6B6B")
+const BOSS_3_FILL := Color("#1B0D26")
+const BOSS_3_CORE := Color("#FF5C8A")
 
 const PLAYER_RADIUS := 18.0
-const PLAYER_ASSET_WIDTH := 46.0
+const PLAYER_ASSET_WIDTH := 39.1
 const PLAYER_ASSET_ROTATION_OFFSET := PI * 0.5
+const PLAYER_BASE_HEALTH := 3
+const PLAYER_DAMAGE_GRACE_SECONDS := 1.0
 const BASE_ACCEL := 360.0
 const BASE_MAX_SPEED := 190.0
 const DRAG := 105.0
@@ -93,6 +99,17 @@ const GERM_HIT_FLASH_PEAK_SECONDS := 0.05
 const GERM_HIT_FLASH_END_SECONDS := 0.25
 const GERM_HIT_LAYER_STARTS := [0.0, 0.033333335, 0.06666667, 0.09427313]
 const GERM_HIT_LAYER_PEAKS := [0.10000001, 0.13333334, 0.16550392, 0.19917288]
+const GERM_VISUAL_DRAW_ORDER := [
+	GermData.GermTier.BOSS_3,
+	GermData.GermTier.BOSS_2,
+	GermData.GermTier.BOSS,
+	GermData.GermTier.ELITE,
+	GermData.GermTier.LARGE,
+	GermData.GermTier.MEDIUM,
+	GermData.GermTier.SMALL,
+]
+const BEAM_MAX_LENGTH := 1600.0
+const BOON_SELECTION_MOVE_DRAG := 105.0
 
 const CULTURE_WAR_DIALOGUE := preload("res://scripts/culture_war_dialogue.gd")
 
@@ -112,6 +129,7 @@ var germ_specs: Array[GermData] = [
 	preload("res://data/germ_elite.tres"),
 	preload("res://data/germ_boss.tres"),
 	preload("res://data/germ_boss_2.tres"),
+	preload("res://data/germ_boss_3.tres"),
 ]
 
 @onready var audio: PetriAudio = $AudioManager
@@ -135,7 +153,11 @@ var boost_charge := 1.0
 var boost_delay := 0.0
 var boost_active := false
 var spawn_protection_left := 0.0
+var damage_protection_left := 0.0
 var fire_cooldown := 0.0
+var player_health := PLAYER_BASE_HEALTH
+var player_max_health := PLAYER_BASE_HEALTH
+var boss_health_bonus := 0
 
 var run_time := 0.0
 var score := 0
@@ -157,6 +179,21 @@ var bosses_defeated := 0
 var active_boss_stage := -1
 var base_weapon_damage := 1
 var base_weapon_fire_rate := GameMath.BASE_PLAYER_FIRE_RATE
+var boon_selection_lock_left := 0.0
+var boon_reward_stage := -1
+var active_space_boon := BoonData.NO_BOON
+var dash_left := 0.0
+var dash_cooldown := 0.0
+var dash_direction := Vector2.ZERO
+var invincibility_left := 0.0
+var invincibility_cooldown := 0.0
+var freeze_cooldown := 0.0
+var freeze_flash_left := 0.0
+var goo_emit_timer := 0.0
+var beam_charge := 0.0
+var beam_active_left := 0.0
+var beam_tick_left := 0.0
+var beam_direction := Vector2.RIGHT
 
 var pellets: Array[Dictionary] = []
 var germs: Array[Dictionary] = []
@@ -167,6 +204,9 @@ var pickups: Array[Dictionary] = []
 var turrets: Array[Dictionary] = []
 var mines: Array[Dictionary] = []
 var item_levels: Array[int] = []
+var boon_levels: Array[int] = []
+var boon_choices: Array[Dictionary] = []
+var goo_patches: Array[Dictionary] = []
 var popups: Array[Dictionary] = []
 var germ_visual_textures: Array = []
 var germ_flash_masks: Array[Texture2D] = []
@@ -188,6 +228,7 @@ var score_hud_opacity := 1.0
 var timer_hud_opacity := 1.0
 var combo_hud_opacity := 1.0
 var boost_hud_opacity := 1.0
+var health_hud_opacity := 1.0
 var dialogue_occlusion_opacity := 1.0
 
 
@@ -209,9 +250,9 @@ func _create_pools() -> void:
 	for i in PELLET_POOL_SIZE:
 		pellets.append({"active": false, "pos": Vector2.ZERO, "vel": Vector2.ZERO, "life": 0.0, "bounces": 0, "owner": ProjectileOwner.PLAYER, "damage": 1})
 	for i in GameMath.MAX_GERMS:
-		germs.append({"active": false, "tier": GermData.GermTier.LARGE, "pos": Vector2.ZERO, "vel": Vector2.ZERO, "move_speed": 0.0, "hp": 0, "phase": 0.0, "hitter_cooldown": 0.0, "hit_reaction_left": 0.0, "topic_id": -1, "stance": -1, "dash_phase": BossDashPhase.CHASE, "dash_timer": INF, "dash_direction": Vector2.ZERO, "volley_timer": INF, "volley_rotation": 0.0})
+		germs.append({"active": false, "tier": GermData.GermTier.LARGE, "pos": Vector2.ZERO, "vel": Vector2.ZERO, "move_speed": 0.0, "hp": 0, "phase": 0.0, "hitter_cooldown": 0.0, "goo_hit_cooldown": 0.0, "freeze_left": 0.0, "hit_reaction_left": 0.0, "topic_id": -1, "stance": -1, "dash_phase": BossDashPhase.CHASE, "dash_timer": INF, "dash_direction": Vector2.ZERO, "volley_timer": INF, "volley_rotation": 0.0, "ring_timer": INF, "ring_angle": 0.0, "ring_hit_player": false})
 	for i in GameMath.MAX_FRAGMENTS:
-		debris.append({"active": false, "pos": Vector2.ZERO, "vel": Vector2.ZERO, "life": 0.0, "angle": 0.0, "spin": 0.0, "hitter_cooldown": 0.0, "source": DebrisSource.REGULAR, "bounces": -1})
+		debris.append({"active": false, "pos": Vector2.ZERO, "vel": Vector2.ZERO, "life": 0.0, "angle": 0.0, "spin": 0.0, "hitter_cooldown": 0.0, "goo_hit_cooldown": 0.0, "freeze_left": 0.0, "source": DebrisSource.REGULAR, "bounces": -1})
 	for i in TURRET_POOL_SIZE:
 		turrets.append({"active": false, "pos": Vector2.ZERO, "cooldown": 0.0, "angle": 0.0})
 	for i in MINE_POOL_SIZE:
@@ -221,6 +262,12 @@ func _create_pools() -> void:
 		pickups.append({"active": false, "item_type": 0, "pos": Vector2.ZERO, "life": 0.0, "phase": 0.0, "overcharge": false})
 	for i in ItemData.ItemType.size():
 		item_levels.append(0)
+	for i in BoonData.BoonType.size():
+		boon_levels.append(0)
+	for i in BoonData.CHOICE_COUNT:
+		boon_choices.append({"active": false, "boon_type": BoonData.NO_BOON, "pos": Vector2.ZERO, "phase": 0.0})
+	for i in BoonData.GOO_POOL_SIZE:
+		goo_patches.append({"active": false, "pos": Vector2.ZERO, "life": 0.0, "duration": 0.0, "radius": 0.0, "phase": 0.0})
 
 
 func _build_germ_visual_cache() -> void:
@@ -264,6 +311,8 @@ func _germ_palette_color(tier: int) -> Color:
 			return BOSS_FILL
 		GermData.GermTier.BOSS_2:
 			return BOSS_2_FILL
+		GermData.GermTier.BOSS_3:
+			return BOSS_3_FILL
 	return CYAN
 
 
@@ -336,6 +385,9 @@ func _update_layout() -> void:
 
 
 func _update_run(delta: float) -> void:
+	if boss_encounter_phase == BossEncounterPhase.BOON_SELECTION:
+		_update_boon_selection(delta)
+		return
 	if _dialogue_cutscene_active():
 		_update_dialogue(delta)
 		return
@@ -344,30 +396,15 @@ func _update_run(delta: float) -> void:
 	if _dialogue_cutscene_active():
 		return
 	spawn_protection_left = maxf(0.0, spawn_protection_left - delta)
+	damage_protection_left = maxf(0.0, damage_protection_left - delta)
 	fire_cooldown = maxf(0.0, fire_cooldown - delta)
 	_update_overcharge(delta)
 	emit_signal("run_time_changed", run_time)
 
 	var movement := Input.get_vector("move_left", "move_right", "move_up", "move_down")
-	var wants_boost := Input.is_action_pressed("boost") and movement.length_squared() > 0.0
-	var boost_state := GameMath.update_boost(boost_charge, boost_delay, wants_boost, delta)
-	var was_boosting := boost_active
-	boost_charge = float(boost_state.charge)
-	boost_delay = float(boost_state.delay)
-	boost_active = bool(boost_state.active)
-	if boost_active and not was_boosting:
-		audio.play_sfx("boost")
-	emit_signal("boost_charge_changed", boost_charge)
-
-	var accel := BASE_ACCEL * (BOOST_ACCEL_MULT if boost_active else 1.0)
-	var max_speed := BASE_MAX_SPEED * (BOOST_SPEED_MULT if boost_active else 1.0)
-	if movement.length_squared() > 0.0:
-		player_velocity += movement.normalized() * accel * delta
-	else:
-		player_velocity = player_velocity.move_toward(Vector2.ZERO, DRAG * delta)
-	if player_velocity.length() > max_speed:
-		player_velocity = player_velocity.normalized() * max_speed
-	player_pos += player_velocity * delta
+	_update_boon_cooldowns(delta)
+	_update_space_ability(delta, movement)
+	_update_player_movement(delta, movement)
 	_resolve_player_membrane()
 
 	var aim := get_global_mouse_position() - player_pos
@@ -375,6 +412,7 @@ func _update_run(delta: float) -> void:
 		player_facing = aim.angle()
 	if Input.is_action_pressed("fire") and fire_cooldown <= 0.0:
 		_fire_pellet()
+	_update_beam(delta)
 
 	_update_pellets(delta)
 	_update_spawn_warnings(delta)
@@ -386,6 +424,7 @@ func _update_run(delta: float) -> void:
 	_update_mines(delta)
 	_update_spinning_hitters(delta)
 	_update_aoe(delta)
+	_update_goo_patches(delta)
 	_resolve_projectile_hits()
 	_resolve_hostile_hits()
 	_update_boss_encounter()
@@ -407,21 +446,169 @@ func _update_run(delta: float) -> void:
 			audio.play_sfx("elite_spawn")
 
 
-func _resolve_player_membrane() -> void:
+func _update_boon_selection(delta: float) -> void:
+	var movement := Input.get_vector("move_left", "move_right", "move_up", "move_down")
+	var movement_multiplier := BoonData.movement_multiplier(_boon_level(BoonData.BoonType.MOVEMENT_SPEED))
+	if movement.length_squared() > 0.0:
+		player_velocity += movement.normalized() * BASE_ACCEL * movement_multiplier * delta
+	else:
+		player_velocity = player_velocity.move_toward(Vector2.ZERO, BOON_SELECTION_MOVE_DRAG * delta)
+	var max_speed := BASE_MAX_SPEED * movement_multiplier
+	if player_velocity.length() > max_speed:
+		player_velocity = player_velocity.normalized() * max_speed
+	player_pos += player_velocity * delta
+	_resolve_player_membrane(true)
+	var aim := get_global_mouse_position() - player_pos
+	if aim.length_squared() > 1.0:
+		player_facing = aim.angle()
+	boon_selection_lock_left = maxf(0.0, boon_selection_lock_left - delta)
+	if boon_selection_lock_left <= 0.000001:
+		boon_selection_lock_left = 0.0
+	for i in boon_choices.size():
+		if not bool(boon_choices[i].active):
+			continue
+		boon_choices[i].phase = float(boon_choices[i].phase) + delta
+		if boon_selection_lock_left <= 0.0 and player_pos.distance_squared_to(Vector2(boon_choices[i].pos)) <= pow(PLAYER_RADIUS + BoonData.CHOICE_PICKUP_RADIUS, 2.0):
+			_collect_boon_choice(i)
+			return
+
+
+func _update_boon_cooldowns(delta: float) -> void:
+	dash_cooldown = maxf(0.0, dash_cooldown - delta)
+	invincibility_cooldown = maxf(0.0, invincibility_cooldown - delta)
+	invincibility_left = maxf(0.0, invincibility_left - delta)
+	freeze_cooldown = maxf(0.0, freeze_cooldown - delta)
+	freeze_flash_left = maxf(0.0, freeze_flash_left - delta)
+
+
+func _update_space_ability(delta: float, movement: Vector2) -> void:
+	var mobility_level := _boon_level(BoonData.BoonType.SPEED_BOOSTS)
+	var mobility_speed := BoonData.mobility_speed_multiplier(mobility_level)
+	var mobility_duration := BoonData.mobility_duration_multiplier(mobility_level)
+	var mobility_recharge := BoonData.mobility_recharge_multiplier(mobility_level)
+	if dash_left > 0.0:
+		dash_left = maxf(0.0, dash_left - delta)
+		player_velocity = dash_direction * BoonData.dash_speed(_boon_level(BoonData.BoonType.DASH_EVADE)) * mobility_speed
+		boost_active = false
+		return
+	match active_space_boon:
+		BoonData.BoonType.DASH_EVADE:
+			boost_active = false
+			if Input.is_action_just_pressed("boost") and dash_cooldown <= 0.0:
+				dash_direction = movement.normalized() if movement.length_squared() > 0.0 else Vector2.RIGHT.rotated(player_facing)
+				var level := _boon_level(BoonData.BoonType.DASH_EVADE)
+				dash_left = BoonData.dash_duration(level) * mobility_duration
+				dash_cooldown = BoonData.dash_cooldown(level) / mobility_recharge
+				player_velocity = dash_direction * BoonData.dash_speed(level) * mobility_speed
+				audio.play_sfx("boost")
+		BoonData.BoonType.INVINCIBILITY:
+			boost_active = false
+			if Input.is_action_just_pressed("boost") and invincibility_cooldown <= 0.0:
+				var level := _boon_level(BoonData.BoonType.INVINCIBILITY)
+				invincibility_left = BoonData.invincibility_duration(level)
+				invincibility_cooldown = BoonData.invincibility_cooldown(level)
+				audio.play_sfx("boost")
+		BoonData.BoonType.FREEZE_AOE_SHOCK:
+			boost_active = false
+			if Input.is_action_just_pressed("boost") and freeze_cooldown <= 0.0:
+				_activate_freeze_shock()
+		_:
+			var wants_boost := Input.is_action_pressed("boost") and movement.length_squared() > 0.0
+			var boost_state := GameMath.update_boost(boost_charge, boost_delay, wants_boost, delta, mobility_duration, mobility_recharge)
+			var was_boosting := boost_active
+			boost_charge = float(boost_state.charge)
+			boost_delay = float(boost_state.delay)
+			boost_active = bool(boost_state.active)
+			if boost_active and not was_boosting:
+				audio.play_sfx("boost")
+			if active_space_boon == BoonData.BoonType.GOO_TRAIL_BOOST and boost_active:
+				goo_emit_timer -= delta
+				if goo_emit_timer <= 0.0:
+					_spawn_goo_patch(player_pos)
+					goo_emit_timer += BoonData.goo_interval(_boon_level(BoonData.BoonType.GOO_TRAIL_BOOST))
+			else:
+				goo_emit_timer = 0.0
+	emit_signal("boost_charge_changed", _space_meter_value())
+
+
+func _update_player_movement(delta: float, movement: Vector2) -> void:
+	if dash_left > 0.0:
+		player_pos += player_velocity * delta
+		return
+	var movement_multiplier := BoonData.movement_multiplier(_boon_level(BoonData.BoonType.MOVEMENT_SPEED))
+	var mobility_speed := BoonData.mobility_speed_multiplier(_boon_level(BoonData.BoonType.SPEED_BOOSTS))
+	var accel_boost := 1.0
+	var speed_boost := 1.0
+	if boost_active:
+		if active_space_boon == BoonData.BoonType.GOO_TRAIL_BOOST:
+			var goo_level := _boon_level(BoonData.BoonType.GOO_TRAIL_BOOST)
+			accel_boost = BoonData.goo_accel_multiplier(goo_level) * mobility_speed
+			speed_boost = BoonData.goo_speed_multiplier(goo_level) * mobility_speed
+		else:
+			accel_boost = BOOST_ACCEL_MULT * mobility_speed
+			speed_boost = BOOST_SPEED_MULT * mobility_speed
+	var accel := BASE_ACCEL * movement_multiplier * accel_boost
+	var max_speed := BASE_MAX_SPEED * movement_multiplier * speed_boost
+	if movement.length_squared() > 0.0:
+		player_velocity += movement.normalized() * accel * delta
+	else:
+		player_velocity = player_velocity.move_toward(Vector2.ZERO, DRAG * delta)
+	if player_velocity.length() > max_speed:
+		player_velocity = player_velocity.normalized() * max_speed
+	player_pos += player_velocity * delta
+
+
+func _resolve_player_membrane(force_safe: bool = false) -> void:
 	var from_center := player_pos - arena_center
 	var limit := arena_radius - PLAYER_RADIUS
 	if from_center.length() <= limit:
 		return
+	if invincibility_left > 0.0 and not force_safe:
+		return
 	var normal := from_center.normalized()
 	var outward_speed := maxf(0.0, player_velocity.dot(normal))
 	player_pos = arena_center + normal * limit
-	if GameMath.membrane_is_lethal(outward_speed):
-		_finish_run("Membrane impact")
+	if dash_left > 0.0:
+		dash_left = 0.0
+		player_velocity = Vector2.ZERO
 		return
+	var took_damage := false
+	if not force_safe and GameMath.membrane_is_lethal(outward_speed):
+		took_damage = _damage_player("Membrane impact", true)
+		if state == AppState.GAME_OVER:
+			return
 	player_velocity = player_velocity.bounce(normal) * 0.66
-	audio.play_sfx("impact")
+	if not took_damage:
+		audio.play_sfx("impact")
 	if not bool(saved.reduced_motion):
 		screen_shake = maxf(screen_shake, 0.22)
+
+
+func _player_damage_blocked(ignore_spawn_protection: bool = false) -> bool:
+	return state != AppState.PLAYING or boss_encounter_phase == BossEncounterPhase.BOON_SELECTION or (spawn_protection_left > 0.0 and not ignore_spawn_protection) or damage_protection_left > 0.0 or dash_left > 0.0 or invincibility_left > 0.0
+
+
+func _damage_player(reason: String, ignore_spawn_protection: bool = false) -> bool:
+	if _player_damage_blocked(ignore_spawn_protection):
+		return false
+	player_health = maxi(0, player_health - 1)
+	emit_signal("health_changed", player_health, player_max_health)
+	if player_health <= 0:
+		_finish_run(reason)
+		return true
+	damage_protection_left = PLAYER_DAMAGE_GRACE_SECONDS
+	popups.append({"pos": player_pos, "text": "-1 HP", "life": 0.8, "duration": 0.8, "item_type": -1, "occlusion_opacity": 1.0, "color": BOSS_2_CORE})
+	audio.play_sfx("impact")
+	if not bool(saved.get("reduced_motion", false)):
+		screen_shake = maxf(screen_shake, 0.38)
+	return true
+
+
+func _restore_player_health() -> void:
+	player_max_health = BoonData.player_max_health(_boon_level(BoonData.BoonType.MAX_HEALTH)) + boss_health_bonus
+	player_health = player_max_health
+	damage_protection_left = 0.0
+	emit_signal("health_changed", player_health, player_max_health)
 
 
 func _fire_pellet() -> void:
@@ -463,6 +650,177 @@ func _player_projectile_damage() -> int:
 
 func _player_fire_interval() -> float:
 	return 1.0 / maxf(base_weapon_fire_rate, 0.001)
+
+
+func _boon_level(boon_type: int) -> int:
+	if boon_type < 0 or boon_type >= boon_levels.size():
+		return 0
+	return boon_levels[boon_type]
+
+
+func _space_hud_label() -> String:
+	if active_space_boon == BoonData.NO_BOON:
+		return "BOOST"
+	return BoonData.short_label(active_space_boon)
+
+
+func _space_meter_value() -> float:
+	match active_space_boon:
+		BoonData.BoonType.DASH_EVADE:
+			if dash_left > 0.0:
+				var duration := BoonData.dash_duration(_boon_level(active_space_boon)) * BoonData.mobility_duration_multiplier(_boon_level(BoonData.BoonType.SPEED_BOOSTS))
+				return clampf(dash_left / maxf(duration, 0.001), 0.0, 1.0)
+			var cooldown := BoonData.dash_cooldown(_boon_level(active_space_boon)) / BoonData.mobility_recharge_multiplier(_boon_level(BoonData.BoonType.SPEED_BOOSTS))
+			return 1.0 - clampf(dash_cooldown / maxf(cooldown, 0.001), 0.0, 1.0)
+		BoonData.BoonType.INVINCIBILITY:
+			if invincibility_left > 0.0:
+				return clampf(invincibility_left / BoonData.invincibility_duration(_boon_level(active_space_boon)), 0.0, 1.0)
+			return 1.0 - clampf(invincibility_cooldown / BoonData.invincibility_cooldown(_boon_level(active_space_boon)), 0.0, 1.0)
+		BoonData.BoonType.FREEZE_AOE_SHOCK:
+			return 1.0 - clampf(freeze_cooldown / BoonData.freeze_cooldown(_boon_level(active_space_boon)), 0.0, 1.0)
+	return boost_charge
+
+
+func _update_beam(delta: float) -> void:
+	var beam_level := _boon_level(BoonData.BoonType.CHARGED_BEAM)
+	if beam_level <= 0:
+		beam_charge = 0.0
+		beam_active_left = 0.0
+		return
+	var aim := get_global_mouse_position() - player_pos
+	if aim.length_squared() > 1.0:
+		beam_direction = aim.normalized()
+	if beam_active_left > 0.0:
+		beam_active_left = maxf(0.0, beam_active_left - delta)
+		beam_tick_left -= delta
+		while beam_tick_left <= 0.0 and beam_active_left > 0.0:
+			_damage_beam(beam_level)
+			beam_tick_left += BoonData.BEAM_TICK_SECONDS
+		return
+	if Input.is_action_pressed("fire"):
+		beam_charge = minf(BoonData.BEAM_CHARGE_SECONDS, beam_charge + delta)
+	elif Input.is_action_just_released("fire"):
+		if beam_charge >= BoonData.BEAM_CHARGE_SECONDS:
+			_begin_charged_beam()
+		beam_charge = 0.0
+	elif beam_charge > 0.0:
+		beam_charge = 0.0
+
+
+func _begin_charged_beam() -> void:
+	if _boon_level(BoonData.BoonType.CHARGED_BEAM) <= 0 or beam_active_left > 0.0:
+		return
+	beam_active_left = BoonData.BEAM_DURATION_SECONDS
+	beam_tick_left = 0.0
+	audio.play_sfx("aoe")
+
+
+func _beam_end() -> Vector2:
+	var direction := beam_direction.normalized()
+	if direction.length_squared() <= 0.0:
+		direction = Vector2.RIGHT.rotated(player_facing)
+	var offset := player_pos - arena_center
+	var projection := offset.dot(direction)
+	var discriminant := projection * projection - offset.length_squared() + arena_radius * arena_radius
+	var distance := BEAM_MAX_LENGTH
+	if discriminant >= 0.0:
+		distance = minf(BEAM_MAX_LENGTH, maxf(0.0, -projection + sqrt(discriminant)))
+	return player_pos + direction * distance
+
+
+func _damage_beam(level: int) -> void:
+	var start := player_pos
+	var finish := _beam_end()
+	var width := BoonData.beam_width(level)
+	var damage := BoonData.beam_damage(level)
+	var germ_targets: Array[int] = []
+	var debris_targets: Array[int] = []
+	for i in germs.size():
+		if not bool(germs[i].active):
+			continue
+		var radius := germ_specs[int(germs[i].tier)].radius + width * 0.5
+		if _distance_squared_to_segment(Vector2(germs[i].pos), start, finish) <= radius * radius:
+			germ_targets.append(i)
+	for i in debris.size():
+		if bool(debris[i].active) and _distance_squared_to_segment(Vector2(debris[i].pos), start, finish) <= pow(8.0 + width * 0.5, 2.0):
+			debris_targets.append(i)
+	for index in germ_targets:
+		_damage_germ(index, damage)
+	for index in debris_targets:
+		_destroy_debris(index)
+
+
+func _distance_squared_to_segment(point: Vector2, start: Vector2, finish: Vector2) -> float:
+	var segment := finish - start
+	if segment.length_squared() <= 0.0001:
+		return point.distance_squared_to(start)
+	var t := clampf((point - start).dot(segment) / segment.length_squared(), 0.0, 1.0)
+	return point.distance_squared_to(start + segment * t)
+
+
+func _activate_freeze_shock() -> void:
+	var level := _boon_level(BoonData.BoonType.FREEZE_AOE_SHOCK)
+	if level <= 0:
+		return
+	var radius := BoonData.freeze_radius(level)
+	var duration := BoonData.freeze_duration(level)
+	for i in germs.size():
+		if bool(germs[i].active) and player_pos.distance_squared_to(Vector2(germs[i].pos)) <= pow(radius + germ_specs[int(germs[i].tier)].radius, 2.0):
+			germs[i].freeze_left = maxf(float(germs[i].get("freeze_left", 0.0)), duration)
+	for i in debris.size():
+		if bool(debris[i].active) and player_pos.distance_squared_to(Vector2(debris[i].pos)) <= pow(radius + 8.0, 2.0):
+			debris[i].freeze_left = maxf(float(debris[i].get("freeze_left", 0.0)), duration)
+	freeze_cooldown = BoonData.freeze_cooldown(level)
+	freeze_flash_left = 0.35
+	audio.play_sfx("aoe")
+
+
+func _spawn_goo_patch(at: Vector2) -> bool:
+	var level := _boon_level(BoonData.BoonType.GOO_TRAIL_BOOST)
+	if level <= 0:
+		return false
+	for i in goo_patches.size():
+		if bool(goo_patches[i].active):
+			continue
+		var duration := BoonData.goo_lifetime(level)
+		goo_patches[i] = {"active": true, "pos": at, "life": duration, "duration": duration, "radius": BoonData.goo_radius(level), "phase": rng.randf_range(0.0, TAU)}
+		return true
+	return false
+
+
+func _update_goo_patches(delta: float) -> void:
+	for i in goo_patches.size():
+		if not bool(goo_patches[i].active):
+			continue
+		goo_patches[i].life = float(goo_patches[i].life) - delta
+		goo_patches[i].phase = float(goo_patches[i].phase) + delta
+		if float(goo_patches[i].life) <= 0.0:
+			goo_patches[i].active = false
+	var germ_targets: Array[int] = []
+	var debris_targets: Array[int] = []
+	for i in germs.size():
+		if not bool(germs[i].active) or float(germs[i].get("goo_hit_cooldown", 0.0)) > 0.0:
+			continue
+		if _hostile_overlaps_goo(Vector2(germs[i].pos), germ_specs[int(germs[i].tier)].radius * 0.6):
+			germs[i].goo_hit_cooldown = BoonData.GOO_HIT_COOLDOWN
+			germ_targets.append(i)
+	for i in debris.size():
+		if not bool(debris[i].active) or float(debris[i].get("goo_hit_cooldown", 0.0)) > 0.0:
+			continue
+		if _hostile_overlaps_goo(Vector2(debris[i].pos), 8.0):
+			debris[i].goo_hit_cooldown = BoonData.GOO_HIT_COOLDOWN
+			debris_targets.append(i)
+	for index in germ_targets:
+		_damage_germ(index, 1)
+	for index in debris_targets:
+		_destroy_debris(index)
+
+
+func _hostile_overlaps_goo(at: Vector2, hostile_radius: float) -> bool:
+	for patch in goo_patches:
+		if bool(patch.active) and at.distance_squared_to(Vector2(patch.pos)) <= pow(float(patch.radius) + hostile_radius, 2.0):
+			return true
+	return false
 
 
 func _spawn_projectile(at: Vector2, direction: Vector2, speed: float, life: float, bounces: int, owner: int, inherited_velocity: Vector2 = Vector2.ZERO, damage: int = 1) -> bool:
@@ -510,16 +868,22 @@ func _update_germs(delta: float) -> void:
 			continue
 		var g := germs[i]
 		g.hitter_cooldown = maxf(0.0, float(g.hitter_cooldown) - delta)
+		g.goo_hit_cooldown = maxf(0.0, float(g.get("goo_hit_cooldown", 0.0)) - delta)
 		g.hit_reaction_left = maxf(0.0, float(g.get("hit_reaction_left", 0.0)) - delta)
+		var frozen := float(g.get("freeze_left", 0.0)) > 0.0
+		g.freeze_left = maxf(0.0, float(g.get("freeze_left", 0.0)) - delta)
+		var simulation_delta := delta
+		if frozen:
+			simulation_delta *= 0.5 if _is_boss_tier(int(g.tier)) else 0.0
 		if _is_boss_tier(int(g.tier)):
-			g = _update_boss_movement(g, delta)
+			g = _update_boss_movement(g, simulation_delta)
 		else:
 			var target_dir := (player_pos - Vector2(g.pos)).normalized()
 			var current_speed := Vector2(g.vel).length()
 			var wanted := target_dir * current_speed
-			g.vel = Vector2(g.vel).lerp(wanted, minf(1.0, delta * 0.18))
-			g.pos += Vector2(g.vel) * speed_mult * delta
-		g.phase = float(g.phase) + delta
+			g.vel = Vector2(g.vel).lerp(wanted, minf(1.0, simulation_delta * 0.18))
+			g.pos += Vector2(g.vel) * speed_mult * simulation_delta
+		g.phase = float(g.phase) + simulation_delta
 		var spec := germ_specs[int(g.tier)]
 		var edge := Vector2(g.pos) - arena_center
 		if edge.length() + spec.radius > arena_radius:
@@ -535,11 +899,20 @@ func _update_germs(delta: float) -> void:
 
 
 func _is_boss_tier(tier: int) -> bool:
-	return tier == GermData.GermTier.BOSS or tier == GermData.GermTier.BOSS_2
+	return tier == GermData.GermTier.BOSS or tier == GermData.GermTier.BOSS_2 or tier == GermData.GermTier.BOSS_3
+
+
+func _boss_has_volley(tier: int) -> bool:
+	return tier == GermData.GermTier.BOSS_2 or tier == GermData.GermTier.BOSS_3
+
+
+func _boss_has_ring(tier: int) -> bool:
+	return tier == GermData.GermTier.BOSS_3
 
 
 func _update_boss_movement(germ: Dictionary, delta: float) -> Dictionary:
 	var g := germ
+	var tier := int(g.tier)
 	match int(g.dash_phase):
 		BossDashPhase.WARNING:
 			g.vel = Vector2.ZERO
@@ -559,13 +932,35 @@ func _update_boss_movement(germ: Dictionary, delta: float) -> Dictionary:
 			g.vel = Vector2.ZERO
 			g.volley_timer = float(g.volley_timer) - delta
 			if float(g.volley_timer) <= 0.0:
-				_spawn_boss_volley(Vector2(g.pos), float(g.volley_rotation))
+				_spawn_boss_volley(Vector2(g.pos), float(g.volley_rotation), tier)
 				g.dash_phase = BossDashPhase.CHASE
 				g.volley_timer = GameMath.BOSS_VOLLEY_COOLDOWN
+		BossDashPhase.RING_WARNING:
+			g.vel = Vector2.ZERO
+			g.ring_timer = float(g.ring_timer) - delta
+			if float(g.ring_timer) <= 0.0:
+				g.dash_phase = BossDashPhase.RING_ACTIVE
+				g.ring_timer = GameMath.BOSS_RING_ACTIVE_SECONDS
+				g.ring_hit_player = false
+				audio.play_sfx("aoe")
+		BossDashPhase.RING_ACTIVE:
+			g.vel = Vector2.ZERO
+			var previous_radius := _boss_ring_radius(float(g.ring_timer))
+			g.ring_timer = maxf(0.0, float(g.ring_timer) - delta)
+			var next_radius := _boss_ring_radius(float(g.ring_timer))
+			if not bool(g.ring_hit_player) and _boss_ring_swept_hits_player(g, previous_radius, next_radius):
+				if _damage_player("Contracting ring"):
+					g.ring_hit_player = true
+			if float(g.ring_timer) <= 0.0:
+				g.dash_phase = BossDashPhase.CHASE
+				g.ring_timer = GameMath.BOSS_RING_COOLDOWN
+				g.ring_hit_player = false
 		_:
 			g.dash_timer = float(g.dash_timer) - delta
-			if int(g.tier) == GermData.GermTier.BOSS_2:
+			if _boss_has_volley(tier):
 				g.volley_timer = float(g.volley_timer) - delta
+			if _boss_has_ring(tier):
+				g.ring_timer = float(g.ring_timer) - delta
 			var target_dir := (player_pos - Vector2(g.pos)).normalized()
 			var wanted := target_dir * float(g.move_speed)
 			g.vel = Vector2(g.vel).lerp(wanted, minf(1.0, delta * 0.7))
@@ -575,16 +970,35 @@ func _update_boss_movement(germ: Dictionary, delta: float) -> Dictionary:
 				g.dash_timer = GameMath.BOSS_DASH_WARNING_SECONDS
 				g.dash_direction = target_dir
 				g.vel = Vector2.ZERO
-			elif int(g.tier) == GermData.GermTier.BOSS_2 and float(g.volley_timer) <= 0.0:
+			elif _boss_has_volley(tier) and float(g.volley_timer) <= 0.0:
 				g.dash_phase = BossDashPhase.VOLLEY_WARNING
 				g.volley_timer = GameMath.BOSS_VOLLEY_WARNING_SECONDS
 				g.volley_rotation = rng.randf_range(0.0, TAU)
 				g.vel = Vector2.ZERO
+			elif _boss_has_ring(tier) and float(g.ring_timer) <= 0.0:
+				g.dash_phase = BossDashPhase.RING_WARNING
+				g.ring_timer = GameMath.BOSS_RING_WARNING_SECONDS
+				g.ring_angle = (player_pos - arena_center).angle()
+				g.ring_hit_player = false
+				g.vel = Vector2.ZERO
 	return g
 
 
-func _spawn_boss_volley(at: Vector2, rotation: float) -> void:
-	var spawn_radius := germ_specs[GermData.GermTier.BOSS_2].radius + 12.0
+func _boss_ring_radius(seconds_left: float) -> float:
+	return arena_radius * clampf(seconds_left / GameMath.BOSS_RING_ACTIVE_SECONDS, 0.0, 1.0)
+
+
+func _boss_ring_swept_hits_player(germ: Dictionary, previous_radius: float, next_radius: float) -> bool:
+	var player_from_center := player_pos - arena_center
+	var collision_band := PLAYER_RADIUS + GameMath.BOSS_RING_THICKNESS * 0.5
+	if player_from_center.length() > previous_radius + collision_band or player_from_center.length() < next_radius - collision_band:
+		return false
+	var angle_from_wedge := absf(wrapf(player_from_center.angle() - float(germ.ring_angle), -PI, PI))
+	return angle_from_wedge > GameMath.BOSS_RING_SAFE_WEDGE_RADIANS * 0.5
+
+
+func _spawn_boss_volley(at: Vector2, rotation: float, boss_tier: int = GermData.GermTier.BOSS_2) -> void:
+	var spawn_radius := germ_specs[boss_tier].radius + 12.0
 	for shot in GameMath.BOSS_VOLLEY_COUNT:
 		var angle := rotation + TAU * float(shot) / float(GameMath.BOSS_VOLLEY_COUNT)
 		var direction := Vector2.RIGHT.rotated(angle)
@@ -603,6 +1017,8 @@ func _spawn_boss_volley(at: Vector2, rotation: float) -> void:
 				"angle": angle,
 				"spin": rng.randf_range(-6.0, 6.0),
 				"hitter_cooldown": 0.0,
+				"goo_hit_cooldown": 0.0,
+				"freeze_left": 0.0,
 				"source": DebrisSource.BOSS_VOLLEY,
 				"bounces": GameMath.BOSS_VOLLEY_BOUNCES,
 			}
@@ -616,9 +1032,13 @@ func _update_debris(delta: float) -> void:
 			continue
 		var d := debris[i]
 		d.hitter_cooldown = maxf(0.0, float(d.hitter_cooldown) - delta)
-		d.pos += Vector2(d.vel) * delta
-		d.angle = float(d.angle) + float(d.spin) * delta
-		d.life = float(d.life) - delta
+		d.goo_hit_cooldown = maxf(0.0, float(d.get("goo_hit_cooldown", 0.0)) - delta)
+		var frozen := float(d.get("freeze_left", 0.0)) > 0.0
+		d.freeze_left = maxf(0.0, float(d.get("freeze_left", 0.0)) - delta)
+		var simulation_delta := 0.0 if frozen else delta
+		d.pos += Vector2(d.vel) * simulation_delta
+		d.angle = float(d.angle) + float(d.spin) * simulation_delta
+		d.life = float(d.life) - simulation_delta
 		var edge := Vector2(d.pos) - arena_center
 		if edge.length() + 10.0 > arena_radius:
 			var remaining_bounces := int(d.get("bounces", -1))
@@ -849,18 +1269,18 @@ func _update_aoe(delta: float) -> void:
 
 
 func _resolve_hostile_hits() -> void:
-	if not GameMath.hostile_collision_is_lethal(spawn_protection_left):
+	if _player_damage_blocked():
 		return
 	for g in germs:
 		if not bool(g.active):
 			continue
 		var spec := germ_specs[int(g.tier)]
 		if player_pos.distance_squared_to(Vector2(g.pos)) <= pow(PLAYER_RADIUS + spec.radius * 0.82, 2.0):
-			_finish_run("Germ contact")
+			_damage_player("Germ contact")
 			return
 	for d in debris:
 		if bool(d.active) and player_pos.distance_squared_to(Vector2(d.pos)) <= pow(PLAYER_RADIUS + 8.0, 2.0):
-			_finish_run("Debris contact")
+			_damage_player("Debris contact")
 			return
 
 
@@ -889,7 +1309,7 @@ func _spawn_germ(tier: int, position_override: Variant = null, topic_override: i
 			topic_id = topic_override if topic_override >= 0 else rng.randi_range(0, CULTURE_WAR_DIALOGUE.topic_count() - 1)
 			if tier != GermData.GermTier.LARGE:
 				stance = stance_override if stance_override >= 0 else rng.randi_range(CULTURE_WAR_DIALOGUE.STANCE_A, CULTURE_WAR_DIALOGUE.STANCE_B)
-		germs[i] = {"active": true, "tier": tier, "pos": at, "vel": direction * speed, "move_speed": speed, "hp": spec.hp, "phase": rng.randf_range(0.0, TAU), "hitter_cooldown": 0.0, "hit_reaction_left": 0.0, "topic_id": topic_id, "stance": stance, "dash_phase": BossDashPhase.CHASE, "dash_timer": GameMath.BOSS_INITIAL_DASH_DELAY if _is_boss_tier(tier) else INF, "dash_direction": Vector2.ZERO, "volley_timer": GameMath.BOSS_VOLLEY_INITIAL_DELAY if tier == GermData.GermTier.BOSS_2 else INF, "volley_rotation": 0.0}
+		germs[i] = {"active": true, "tier": tier, "pos": at, "vel": direction * speed, "move_speed": speed, "hp": spec.hp, "phase": rng.randf_range(0.0, TAU), "hitter_cooldown": 0.0, "goo_hit_cooldown": 0.0, "freeze_left": 0.0, "hit_reaction_left": 0.0, "topic_id": topic_id, "stance": stance, "dash_phase": BossDashPhase.CHASE, "dash_timer": GameMath.BOSS_INITIAL_DASH_DELAY if _is_boss_tier(tier) else INF, "dash_direction": Vector2.ZERO, "volley_timer": GameMath.BOSS_VOLLEY_INITIAL_DELAY if _boss_has_volley(tier) else INF, "volley_rotation": 0.0, "ring_timer": GameMath.BOSS_RING_INITIAL_DELAY if _boss_has_ring(tier) else INF, "ring_angle": 0.0, "ring_hit_player": false}
 		if _is_boss_tier(tier):
 			boss_encounter_phase = BossEncounterPhase.ACTIVE
 		_try_show_germ_dialogue(i, dialogue_priority or tier == GermData.GermTier.LARGE or tier == GermData.GermTier.ELITE or _is_boss_tier(tier))
@@ -1068,6 +1488,8 @@ func _spawn_debris(at: Vector2, count: int) -> void:
 			"angle": angle,
 			"spin": rng.randf_range(-4.5, 4.5),
 			"hitter_cooldown": 0.0,
+			"goo_hit_cooldown": 0.0,
+			"freeze_left": 0.0,
 			"source": DebrisSource.REGULAR,
 			"bounces": -1,
 		}
@@ -1083,6 +1505,9 @@ func _destroy_germ(index: int) -> void:
 	var stance := int(germs[index].get("stance", -1))
 	germs[index].active = false
 	germs[index].hit_reaction_left = 0.0
+	germs[index].ring_timer = INF
+	germs[index].ring_angle = 0.0
+	germs[index].ring_hit_player = false
 	_remove_pending_dialogue(index)
 	if dialogue_speaker == DialogueSpeaker.GERM and dialogue_germ_index == index:
 		_clear_dialogue_bubble()
@@ -1106,7 +1531,7 @@ func _destroy_germ(index: int) -> void:
 func _award_kill(base: int, at: Vector2) -> void:
 	combo = GameMath.combo_after_kill(combo, run_time - last_kill_time)
 	last_kill_time = run_time
-	var points := GameMath.awarded_score(base, combo)
+	var points := GameMath.awarded_score(base, combo, BoonData.point_multiplier(_boon_level(BoonData.BoonType.POINT_MULTIPLIER)))
 	score += points
 	popups.append({"pos": at, "text": "+%d%s" % [points, "   %dx" % combo if combo > 1 else ""], "life": 0.8, "duration": 0.8, "item_type": -1, "occlusion_opacity": 1.0})
 	emit_signal("score_changed", score)
@@ -1123,18 +1548,28 @@ func _begin_boss_cleanup() -> void:
 
 
 func _try_begin_next_boss_encounter() -> void:
-	if boss_encounter_phase != BossEncounterPhase.INACTIVE or bosses_defeated >= 2:
+	if boss_encounter_phase != BossEncounterPhase.INACTIVE or bosses_defeated >= GameMath.BOSS_STAGE_COUNT:
 		return
 	if score >= _boss_threshold_for_stage(bosses_defeated):
 		_begin_boss_cleanup()
 
 
 func _boss_threshold_for_stage(stage: int) -> int:
-	return GameMath.BOSS_2_SCORE_THRESHOLD if stage == 1 else GameMath.BOSS_SCORE_THRESHOLD
+	match stage:
+		1:
+			return GameMath.BOSS_2_SCORE_THRESHOLD
+		2:
+			return GameMath.BOSS_3_SCORE_THRESHOLD
+	return GameMath.BOSS_SCORE_THRESHOLD
 
 
 func _boss_tier_for_stage(stage: int) -> int:
-	return GermData.GermTier.BOSS_2 if stage == 1 else GermData.GermTier.BOSS
+	match stage:
+		1:
+			return GermData.GermTier.BOSS_2
+		2:
+			return GermData.GermTier.BOSS_3
+	return GermData.GermTier.BOSS
 
 
 func _format_score_threshold(value: int) -> String:
@@ -1154,23 +1589,121 @@ func _update_boss_encounter() -> void:
 func _complete_boss_encounter() -> void:
 	var completed_stage := active_boss_stage
 	_reset_abilities_for_boss_reward()
+	_clear_transient_boon_effects()
 	if completed_stage == 0:
 		base_weapon_damage = 2
 		base_weapon_fire_rate = GameMath.BASE_PLAYER_FIRE_RATE
-	elif completed_stage == 1:
+	elif completed_stage >= 1:
 		_clear_boss_volley_debris()
 		base_weapon_damage = 2
 		base_weapon_fire_rate = GameMath.OVERCLOCKED_PLAYER_FIRE_RATE
+		if completed_stage == 2:
+			boss_health_bonus = 1
+	_restore_player_health()
 	fire_cooldown = minf(fire_cooldown, _player_fire_interval())
 	bosses_defeated = maxi(bosses_defeated, completed_stage + 1)
+	boon_reward_stage = completed_stage
 	active_boss_stage = -1
-	boss_encounter_phase = BossEncounterPhase.COMPLETED if bosses_defeated >= 2 else BossEncounterPhase.INACTIVE
-	spawn_timer = GameMath.spawn_interval(run_time)
-	elite_timer = GameMath.ELITE_SPAWN_INTERVAL
-	var reward_text := "ABILITIES RESET  //  WEAPON OVERCLOCKED" if completed_stage == 1 else "ABILITIES RESET  //  BASE WEAPON MK II"
+	boss_encounter_phase = BossEncounterPhase.BOON_SELECTION
+	player_velocity = Vector2.ZERO
+	_begin_boon_selection()
+	var reward_text := "ABILITIES RESET  //  BASE WEAPON MK II"
+	if completed_stage == 1:
+		reward_text = "ABILITIES RESET  //  WEAPON OVERCLOCKED"
+	elif completed_stage == 2:
+		reward_text = "ABILITIES RESET  //  MAX HEALTH +1"
 	popups.append({"pos": player_pos, "text": reward_text, "life": 2.4, "duration": 2.4, "item_type": -1, "occlusion_opacity": 1.0, "color": LIME_DARK})
 	audio.play_sfx("item_pickup")
+
+
+func _begin_boon_selection() -> void:
+	boon_selection_lock_left = BoonData.CHOICE_LOCK_SECONDS
+	_clear_dialogue_bubble()
+	var offered := _generate_boon_offer()
+	var choice_radius := maxf(0.0, minf(120.0, arena_radius - 48.0))
+	for i in boon_choices.size():
+		var angle := -PI * 0.5 + TAU * float(i) / float(BoonData.CHOICE_COUNT)
+		boon_choices[i] = {
+			"active": i < offered.size(),
+			"boon_type": offered[i] if i < offered.size() else BoonData.NO_BOON,
+			"pos": arena_center + Vector2.RIGHT.rotated(angle) * choice_radius,
+			"phase": rng.randf_range(0.0, TAU),
+		}
+	popups.append({"pos": arena_center + Vector2(0.0, arena_radius * 0.68), "text": "CHOOSE ONE BOON", "life": 2.0, "duration": 2.0, "item_type": -1, "occlusion_opacity": 1.0, "color": PURPLE})
+
+
+func _generate_boon_offer() -> Array[int]:
+	var candidates: Array[int] = []
+	for boon_type in BoonData.BoonType.size():
+		if _boon_level(boon_type) >= BoonData.level_cap(boon_type):
+			continue
+		if boon_type == BoonData.BoonType.SPEED_BOOSTS and (active_space_boon == BoonData.BoonType.INVINCIBILITY or active_space_boon == BoonData.BoonType.FREEZE_AOE_SHOCK):
+			continue
+		candidates.append(boon_type)
+	for i in range(candidates.size() - 1, 0, -1):
+		var swap_index := rng.randi_range(0, i)
+		var held := candidates[i]
+		candidates[i] = candidates[swap_index]
+		candidates[swap_index] = held
+	var offered: Array[int] = []
+	for i in mini(BoonData.CHOICE_COUNT, candidates.size()):
+		offered.append(candidates[i])
+	return offered
+
+
+func _collect_boon_choice(index: int) -> bool:
+	if boss_encounter_phase != BossEncounterPhase.BOON_SELECTION or boon_selection_lock_left > 0.0:
+		return false
+	if index < 0 or index >= boon_choices.size() or not bool(boon_choices[index].active):
+		return false
+	var boon_type := int(boon_choices[index].boon_type)
+	boon_levels[boon_type] = mini(BoonData.level_cap(boon_type), boon_levels[boon_type] + 1)
+	if BoonData.is_space_boon(boon_type):
+		active_space_boon = boon_type
+	elif boon_type == BoonData.BoonType.MAX_HEALTH:
+		_restore_player_health()
+	for i in boon_choices.size():
+		boon_choices[i].active = false
+	var level := boon_levels[boon_type]
+	popups.append({"pos": player_pos, "text": "%s  //  LVL %d" % [BoonData.display_name(boon_type), level], "life": 2.0, "duration": 2.0, "item_type": -1, "occlusion_opacity": 1.0, "color": BoonData.color(boon_type)})
+	audio.play_sfx("item_pickup")
+	emit_signal("boon_collected", boon_type, level)
+	_finish_boon_selection()
+	return true
+
+
+func _finish_boon_selection() -> void:
+	boon_selection_lock_left = 0.0
+	boon_reward_stage = -1
+	boss_encounter_phase = BossEncounterPhase.COMPLETED if bosses_defeated >= GameMath.BOSS_STAGE_COUNT else BossEncounterPhase.INACTIVE
+	spawn_timer = GameMath.spawn_interval(run_time)
+	elite_timer = GameMath.ELITE_SPAWN_INTERVAL
 	_try_begin_next_boss_encounter()
+
+
+func _clear_transient_boon_effects() -> void:
+	boost_active = false
+	boost_charge = 1.0
+	boost_delay = 0.0
+	dash_left = 0.0
+	dash_cooldown = 0.0
+	dash_direction = Vector2.ZERO
+	invincibility_left = 0.0
+	invincibility_cooldown = 0.0
+	freeze_cooldown = 0.0
+	freeze_flash_left = 0.0
+	goo_emit_timer = 0.0
+	beam_charge = 0.0
+	beam_active_left = 0.0
+	beam_tick_left = 0.0
+	for i in goo_patches.size():
+		goo_patches[i].active = false
+	for i in germs.size():
+		germs[i].freeze_left = 0.0
+		germs[i].goo_hit_cooldown = 0.0
+	for i in debris.size():
+		debris[i].freeze_left = 0.0
+		debris[i].goo_hit_cooldown = 0.0
 
 
 func _clear_boss_volley_debris() -> void:
@@ -1275,6 +1808,7 @@ func _update_overlay_opacities(delta: float) -> void:
 		timer_hud_opacity = move_toward(timer_hud_opacity, 1.0, delta * OPACITY_TRANSITION_SPEED)
 		combo_hud_opacity = move_toward(combo_hud_opacity, 1.0, delta * OPACITY_TRANSITION_SPEED)
 		boost_hud_opacity = move_toward(boost_hud_opacity, 1.0, delta * OPACITY_TRANSITION_SPEED)
+		health_hud_opacity = move_toward(health_hud_opacity, 1.0, delta * OPACITY_TRANSITION_SPEED)
 		dialogue_occlusion_opacity = move_toward(dialogue_occlusion_opacity, 1.0, delta * OPACITY_TRANSITION_SPEED)
 		return
 	logo_hud_opacity = move_toward(logo_hud_opacity, _overlay_target_opacity(_gameplay_logo_bounds()), delta * OPACITY_TRANSITION_SPEED)
@@ -1282,6 +1816,7 @@ func _update_overlay_opacities(delta: float) -> void:
 	timer_hud_opacity = move_toward(timer_hud_opacity, _timer_opacity(), delta * OPACITY_TRANSITION_SPEED)
 	combo_hud_opacity = move_toward(combo_hud_opacity, _overlay_target_opacity(_combo_bounds()), delta * OPACITY_TRANSITION_SPEED)
 	boost_hud_opacity = move_toward(boost_hud_opacity, _overlay_target_opacity(_boost_bounds()), delta * OPACITY_TRANSITION_SPEED)
+	health_hud_opacity = move_toward(health_hud_opacity, _overlay_target_opacity(_health_bounds()), delta * OPACITY_TRANSITION_SPEED)
 	var dialogue_target := 1.0
 	if dialogue_speaker != DialogueSpeaker.NONE and not dialogue_text.is_empty():
 		var speaker_pos := _dialogue_world_to_screen(player_pos)
@@ -1584,12 +2119,18 @@ func _start_run() -> void:
 	for i in germs.size():
 		germs[i].active = false
 		germs[i].hit_reaction_left = 0.0
+		germs[i].ring_timer = INF
+		germs[i].ring_angle = 0.0
+		germs[i].ring_hit_player = false
 	for i in debris.size(): debris[i].active = false
 	for i in turrets.size(): turrets[i].active = false
 	for i in mines.size(): mines[i].active = false
 	for i in pickups.size(): pickups[i].active = false
 	for i in item_warnings.size(): item_warnings[i].active = false
 	for i in item_levels.size(): item_levels[i] = 0
+	for i in boon_levels.size(): boon_levels[i] = 0
+	for i in boon_choices.size(): boon_choices[i].active = false
+	for i in goo_patches.size(): goo_patches[i].active = false
 	spawn_warnings.clear()
 	popups.clear()
 	_reset_dialogue()
@@ -1598,6 +2139,7 @@ func _start_run() -> void:
 	timer_hud_opacity = 1.0
 	combo_hud_opacity = 1.0
 	boost_hud_opacity = 1.0
+	health_hud_opacity = 1.0
 	run_time = 0.0
 	score = 0
 	combo = 1
@@ -1613,11 +2155,30 @@ func _start_run() -> void:
 	boss_encounter_phase = BossEncounterPhase.INACTIVE
 	bosses_defeated = 0
 	active_boss_stage = -1
+	boon_reward_stage = -1
+	boon_selection_lock_left = 0.0
+	active_space_boon = BoonData.NO_BOON
 	base_weapon_damage = 1
 	base_weapon_fire_rate = GameMath.BASE_PLAYER_FIRE_RATE
+	boss_health_bonus = 0
 	boost_charge = 1.0
 	boost_delay = 0.0
 	boost_active = false
+	player_max_health = PLAYER_BASE_HEALTH
+	player_health = player_max_health
+	damage_protection_left = 0.0
+	dash_left = 0.0
+	dash_cooldown = 0.0
+	dash_direction = Vector2.ZERO
+	invincibility_left = 0.0
+	invincibility_cooldown = 0.0
+	freeze_cooldown = 0.0
+	freeze_flash_left = 0.0
+	goo_emit_timer = 0.0
+	beam_charge = 0.0
+	beam_active_left = 0.0
+	beam_tick_left = 0.0
+	beam_direction = Vector2.RIGHT
 	spawn_protection_left = SPAWN_PROTECTION
 	fire_cooldown = 0.0
 	player_pos = arena_center
@@ -1635,6 +2196,7 @@ func _start_run() -> void:
 		_queue_spawn_warning(opening_tiers[i], opening_rotation + TAU * float(i) / float(opening_tiers.size()))
 	emit_signal("score_changed", score)
 	emit_signal("combo_changed", combo)
+	emit_signal("health_changed", player_health, player_max_health)
 	emit_signal("item_overcharge_changed", -1, 0.0)
 	emit_signal("pause_state_changed", false)
 
@@ -1803,6 +2365,8 @@ func _draw_game_world() -> void:
 	draw_circle(center, arena_radius, WHITE)
 	draw_arc(center, arena_radius, 0.0, TAU, 160, Color(ACCENT_MINT.r, ACCENT_MINT.g, ACCENT_MINT.b, 0.26), 2.0, true)
 
+	for patch in goo_patches:
+		if bool(patch.active): _draw_goo_patch(patch, offset)
 	for warning in spawn_warnings:
 		_draw_spawn_warning(warning, offset)
 	for warning in item_warnings:
@@ -1813,10 +2377,19 @@ func _draw_game_world() -> void:
 		if bool(turret.active): _draw_turret(turret, offset)
 	for pickup in pickups:
 		if bool(pickup.active): _draw_pickup(pickup, offset)
+	for choice in boon_choices:
+		if bool(choice.active): _draw_boon_choice(choice, offset)
+	# Custom-drawn actors use painter's order: larger bodies go down first so
+	# small germs and debris remain legible when threats overlap.
+	for tier in GERM_VISUAL_DRAW_ORDER:
+		for i in germs.size():
+			if bool(germs[i].active) and int(germs[i].tier) == tier:
+				_draw_germ(germs[i], offset, _dialogue_speaker_scale(i))
 	for d in debris:
-		if bool(d.active): _draw_debris(Vector2(d.pos) + offset, float(d.angle), int(d.get("source", DebrisSource.REGULAR)))
-	for i in germs.size():
-		if bool(germs[i].active): _draw_germ(germs[i], offset, _dialogue_speaker_scale(i))
+		if bool(d.active):
+			_draw_debris(Vector2(d.pos) + offset, float(d.angle), int(d.get("source", DebrisSource.REGULAR)))
+			if float(d.get("freeze_left", 0.0)) > 0.0:
+				draw_arc(Vector2(d.pos) + offset, 15.0, 0.0, TAU, 24, Color(CYAN.r, CYAN.g, CYAN.b, 0.78), 2.0, true)
 	for p in pellets:
 		if bool(p.active):
 			var upgraded_player_shot := int(p.owner) == ProjectileOwner.PLAYER and int(p.get("damage", 1)) > 1
@@ -1824,7 +2397,9 @@ func _draw_game_world() -> void:
 			var pellet_radius := 7.0 if upgraded_player_shot else 5.0
 			draw_circle(Vector2(p.pos) + offset, pellet_radius, pellet_color)
 			draw_arc(Vector2(p.pos) + offset, pellet_radius + 1.5, 0.0, TAU, 18, WHITE if upgraded_player_shot else (LIME_DARK if int(p.owner) == ProjectileOwner.PLAYER else PURPLE), 1.5, true)
+	_draw_beam(offset)
 	_draw_aoe_effect(offset)
+	_draw_freeze_effect(offset)
 	_draw_spinning_hitters(offset)
 	_draw_player(offset, _dialogue_speaker_scale())
 	if not _dialogue_cutscene_active():
@@ -1863,8 +2438,8 @@ func _draw_spawn_warning(warning: Dictionary, offset: Vector2) -> void:
 	var progress := 1.0 - clampf(float(warning.life) / float(warning.duration), 0.0, 1.0)
 	var motion := 0.0 if bool(saved.get("reduced_motion", false)) else sin(progress * TAU * 3.0)
 	var aura_radius := spec.radius + 18.0 + motion * 5.0
-	var color := BOSS_2_FILL if tier == GermData.GermTier.BOSS_2 else (BOSS_FILL if tier == GermData.GermTier.BOSS else (ORANGE_HOT if tier == GermData.GermTier.ELITE else (CYAN if tier != GermData.GermTier.MEDIUM else PURPLE_SOFT)))
-	var ring_color := BOSS_2_CORE if tier == GermData.GermTier.BOSS_2 else (LIME if tier == GermData.GermTier.BOSS else (ORANGE_HOT if tier == GermData.GermTier.ELITE else PURPLE))
+	var color := _germ_palette_color(tier)
+	var ring_color := BOSS_3_CORE if tier == GermData.GermTier.BOSS_3 else (BOSS_2_CORE if tier == GermData.GermTier.BOSS_2 else (LIME if tier == GermData.GermTier.BOSS else (ORANGE_HOT if tier == GermData.GermTier.ELITE else PURPLE)))
 	draw_circle(pos, aura_radius, Color(color.r, color.g, color.b, 0.09 + progress * 0.1))
 	for ring in 3:
 		var ring_radius := aura_radius + float(ring) * 9.0 - progress * 7.0
@@ -1929,6 +2504,97 @@ func _draw_item_icon(item_type: int, pos: Vector2, size: float, color: Color) ->
 			draw_circle(pos, 4.0, color)
 
 
+func _draw_boon_choice(choice: Dictionary, offset: Vector2) -> void:
+	var boon_type := int(choice.boon_type)
+	var pos := Vector2(choice.pos) + offset
+	var unlocked := boon_selection_lock_left <= 0.0
+	var color := BoonData.color(boon_type)
+	var alpha := 1.0 if unlocked else 0.36
+	var pulse := 0.0
+	if unlocked and not bool(saved.get("reduced_motion", false)):
+		pulse = sin(float(choice.phase) * 4.0) * 3.0
+	draw_circle(pos, BoonData.CHOICE_PICKUP_RADIUS + 11.0 + pulse, Color(color.r, color.g, color.b, 0.14 * alpha))
+	draw_arc(pos, BoonData.CHOICE_PICKUP_RADIUS + 5.0 + pulse, 0.0, TAU, 40, Color(color.r, color.g, color.b, 0.86 * alpha), 3.0, true)
+	draw_circle(pos, BoonData.CHOICE_PICKUP_RADIUS, Color(WHITE.r, WHITE.g, WHITE.b, 0.92 * alpha))
+	_draw_boon_icon(boon_type, pos, 14.0, Color(color.r, color.g, color.b, alpha))
+	_draw_text_centered(BoonData.display_name(boon_type), pos + Vector2(0.0, -42.0), 13, Color(PURPLE.r, PURPLE.g, PURPLE.b, alpha))
+	_draw_text_centered(BoonData.control_label(boon_type), pos + Vector2(0.0, 48.0), 11, Color(DARK_MINT.r, DARK_MINT.g, DARK_MINT.b, alpha))
+	if not unlocked:
+		var lock_progress := 1.0 - boon_selection_lock_left / BoonData.CHOICE_LOCK_SECONDS
+		draw_arc(pos, BoonData.CHOICE_PICKUP_RADIUS + 9.0, -PI * 0.5, -PI * 0.5 + TAU * clampf(lock_progress, 0.0, 1.0), 36, PURPLE, 3.0, true)
+
+
+func _draw_boon_icon(boon_type: int, pos: Vector2, size: float, color: Color) -> void:
+	match boon_type:
+		BoonData.BoonType.DASH_EVADE:
+			draw_colored_polygon(PackedVector2Array([pos + Vector2(size, 0.0), pos + Vector2(-size, -size * 0.72), pos + Vector2(-size * 0.35, 0.0), pos + Vector2(-size, size * 0.72)]), color)
+		BoonData.BoonType.SPEED_BOOSTS:
+			for offset in [-5.0, 5.0]:
+				draw_line(pos + Vector2(-size, offset), pos + Vector2(size, offset), color, 3.0, true)
+		BoonData.BoonType.POINT_MULTIPLIER:
+			_draw_text_centered("x", pos + Vector2(0.0, 6.0), 25, color)
+		BoonData.BoonType.INVINCIBILITY:
+			draw_arc(pos, size, 0.0, TAU, 28, color, 4.0, true)
+			draw_circle(pos, size * 0.42, color)
+		BoonData.BoonType.GOO_TRAIL_BOOST:
+			draw_circle(pos + Vector2(-5.0, 3.0), size * 0.7, color)
+			draw_circle(pos + Vector2(7.0, -4.0), size * 0.45, color)
+		BoonData.BoonType.FREEZE_AOE_SHOCK:
+			for angle in [0.0, PI / 3.0, PI * 2.0 / 3.0]:
+				draw_line(pos - Vector2.RIGHT.rotated(angle) * size, pos + Vector2.RIGHT.rotated(angle) * size, color, 3.0, true)
+		BoonData.BoonType.MOVEMENT_SPEED:
+			draw_line(pos + Vector2(-size, 7.0), pos + Vector2(size, -7.0), color, 5.0, true)
+			draw_circle(pos + Vector2(-size, 7.0), 4.0, color)
+		BoonData.BoonType.CHARGED_BEAM:
+			draw_line(pos + Vector2(-size, 0.0), pos + Vector2(size, 0.0), color, 7.0, true)
+			draw_circle(pos + Vector2(-size, 0.0), 5.0, WHITE)
+		BoonData.BoonType.MAX_HEALTH:
+			draw_circle(pos + Vector2(-size * 0.42, -size * 0.18), size * 0.54, color)
+			draw_circle(pos + Vector2(size * 0.42, -size * 0.18), size * 0.54, color)
+			draw_colored_polygon(PackedVector2Array([pos + Vector2(-size * 0.92, 0.0), pos + Vector2(size * 0.92, 0.0), pos + Vector2(0.0, size)]), color)
+
+
+func _draw_goo_patch(patch: Dictionary, offset: Vector2) -> void:
+	var pos := Vector2(patch.pos) + offset
+	var alpha := clampf(float(patch.life) / maxf(float(patch.duration), 0.001), 0.0, 1.0)
+	var motion := 0.0 if bool(saved.get("reduced_motion", false)) else sin(float(patch.phase) * 3.5) * 2.0
+	var radius := float(patch.radius) + motion
+	draw_circle(pos, radius, Color(LIME_DARK.r, LIME_DARK.g, LIME_DARK.b, 0.18 * alpha))
+	draw_arc(pos, radius, 0.0, TAU, 30, Color(LIME_DARK.r, LIME_DARK.g, LIME_DARK.b, 0.52 * alpha), 2.0, true)
+
+
+func _draw_boss_ring_attack(germ: Dictionary, offset: Vector2) -> void:
+	var attack_phase := int(germ.dash_phase)
+	if attack_phase != BossDashPhase.RING_WARNING and attack_phase != BossDashPhase.RING_ACTIVE:
+		return
+	var center := arena_center + offset
+	var safe_angle := float(germ.ring_angle)
+	var half_wedge := GameMath.BOSS_RING_SAFE_WEDGE_RADIANS * 0.5
+	var radius := arena_radius - GameMath.BOSS_RING_THICKNESS * 0.5
+	var pulse := 0.0
+	var fill_alpha := 0.28
+	if attack_phase == BossDashPhase.RING_WARNING:
+		if not bool(saved.get("reduced_motion", false)):
+			pulse = sin(float(germ.ring_timer) * 20.0) * 4.0
+		radius += pulse
+	else:
+		radius = _boss_ring_radius(float(germ.ring_timer))
+		fill_alpha = 0.52
+	var arc_start := safe_angle + half_wedge
+	var arc_end := safe_angle + TAU - half_wedge
+	draw_arc(center, radius, arc_start, arc_end, 128, Color(BOSS_3_CORE.r, BOSS_3_CORE.g, BOSS_3_CORE.b, fill_alpha), GameMath.BOSS_RING_THICKNESS, true)
+	draw_arc(center, radius, arc_start, arc_end, 128, Color(CYAN.r, CYAN.g, CYAN.b, 0.9), 2.5, true)
+	for edge_angle in [safe_angle - half_wedge, safe_angle + half_wedge]:
+		var edge_direction := Vector2.RIGHT.rotated(float(edge_angle))
+		var inner := maxf(0.0, radius - 24.0)
+		draw_line(center + edge_direction * inner, center + edge_direction * (radius + 12.0), LIME, 4.0, true)
+	var safe_direction := Vector2.RIGHT.rotated(safe_angle)
+	var marker_distance := maxf(24.0, radius)
+	var marker_tip := center + safe_direction * marker_distance
+	var marker_side := safe_direction.orthogonal()
+	draw_colored_polygon(PackedVector2Array([marker_tip, marker_tip - safe_direction * 18.0 + marker_side * 9.0, marker_tip - safe_direction * 18.0 - marker_side * 9.0]), WHITE)
+
+
 func _draw_germ(g: Dictionary, offset: Vector2, actor_scale: float = 1.0) -> void:
 	var pos := Vector2(g.pos) + offset
 	var tier := int(g.tier)
@@ -1936,7 +2602,10 @@ func _draw_germ(g: Dictionary, offset: Vector2, actor_scale: float = 1.0) -> voi
 	var radius := spec.radius * actor_scale
 	var is_elite := tier == GermData.GermTier.ELITE
 	var is_boss_2 := tier == GermData.GermTier.BOSS_2
+	var is_boss_3 := tier == GermData.GermTier.BOSS_3
 	var is_boss := _is_boss_tier(tier)
+	if is_boss_3:
+		_draw_boss_ring_attack(g, offset)
 	if is_boss and int(g.dash_phase) == BossDashPhase.WARNING:
 		var warning_motion := 0.0 if bool(saved.get("reduced_motion", false)) else 0.5 + sin(float(g.dash_timer) * 18.0) * 0.5
 		var dash_direction := Vector2(g.dash_direction)
@@ -1945,7 +2614,7 @@ func _draw_germ(g: Dictionary, offset: Vector2, actor_scale: float = 1.0) -> voi
 		draw_line(tell_start, tell_end, Color(ORANGE_HOT.r, ORANGE_HOT.g, ORANGE_HOT.b, 0.62 + warning_motion * 0.28), 4.0, true)
 		var tell_side := dash_direction.orthogonal()
 		draw_colored_polygon(PackedVector2Array([tell_end, tell_end - dash_direction * 18.0 + tell_side * 10.0, tell_end - dash_direction * 18.0 - tell_side * 10.0]), ORANGE_HOT)
-	if is_boss_2 and int(g.dash_phase) == BossDashPhase.VOLLEY_WARNING:
+	if (is_boss_2 or is_boss_3) and int(g.dash_phase) == BossDashPhase.VOLLEY_WARNING:
 		var volley_motion := 0.0 if bool(saved.get("reduced_motion", false)) else 0.5 + 0.5 * sin(float(g.volley_timer) * 20.0)
 		for ring in 3:
 			draw_arc(pos, radius + 15.0 + float(ring) * 13.0, 0.0, TAU, 64, Color(BOSS_2_CORE.r, BOSS_2_CORE.g, BOSS_2_CORE.b, 0.5 + volley_motion * 0.3 - float(ring) * 0.1), 3.0, true)
@@ -1954,7 +2623,15 @@ func _draw_germ(g: Dictionary, offset: Vector2, actor_scale: float = 1.0) -> voi
 			var volley_direction := Vector2.RIGHT.rotated(volley_angle)
 			draw_line(pos + volley_direction * (radius + 8.0), pos + volley_direction * (radius + 42.0), LIME, 3.0, true)
 	_draw_germ_asset_body(g, pos, tier, radius, offset)
-	if is_boss_2:
+	if float(g.get("freeze_left", 0.0)) > 0.0:
+		draw_circle(pos, radius * 0.88, Color(CYAN.r, CYAN.g, CYAN.b, 0.08))
+		draw_arc(pos, radius * 0.9, 0.0, TAU, 48, Color(CYAN.r, CYAN.g, CYAN.b, 0.78), 3.0, true)
+	if is_boss_3:
+		draw_arc(pos, radius * 0.82, 0.0, TAU, 56, BOSS_3_CORE, 5.0, true)
+		draw_arc(pos, radius * 0.68, 0.0, TAU, 52, CYAN, 4.0, true)
+		draw_arc(pos, radius * 0.53, 0.0, TAU, 48, LIME, 3.5, true)
+		draw_arc(pos, radius * 0.38, 0.0, TAU, 44, WHITE, 2.5, true)
+	elif is_boss_2:
 		draw_arc(pos, radius * 0.76, 0.0, TAU, 52, LIME, 4.5, true)
 		draw_arc(pos, radius * 0.58, 0.0, TAU, 48, WHITE, 3.0, true)
 		draw_arc(pos, radius * 0.4, 0.0, TAU, 40, ORANGE_HOT, 2.5, true)
@@ -2058,13 +2735,48 @@ func _draw_spinning_hitters(offset: Vector2) -> void:
 		draw_circle(pos + direction * 10.0, 3.0, LIME)
 
 
+func _draw_beam(offset: Vector2) -> void:
+	var level := _boon_level(BoonData.BoonType.CHARGED_BEAM)
+	if beam_active_left <= 0.0 or level <= 0:
+		return
+	var start := player_pos + offset
+	var finish := _beam_end() + offset
+	var width := BoonData.beam_width(level)
+	var flicker := 1.0
+	if not bool(saved.get("reduced_motion", false)):
+		flicker = 0.88 + sin(beam_active_left * 48.0) * 0.12
+	draw_line(start, finish, Color(BOSS_2_CORE.r, BOSS_2_CORE.g, BOSS_2_CORE.b, 0.2), width + 10.0, true)
+	draw_line(start, finish, Color(ORANGE_HOT.r, ORANGE_HOT.g, ORANGE_HOT.b, 0.75 * flicker), width, true)
+	draw_line(start, finish, Color(WHITE.r, WHITE.g, WHITE.b, 0.9 * flicker), maxf(3.0, width * 0.28), true)
+
+
+func _draw_freeze_effect(offset: Vector2) -> void:
+	if freeze_flash_left <= 0.0:
+		return
+	var level := _boon_level(BoonData.BoonType.FREEZE_AOE_SHOCK)
+	if level <= 0:
+		return
+	var alpha := clampf(freeze_flash_left / 0.35, 0.0, 1.0)
+	var radius := BoonData.freeze_radius(level)
+	draw_circle(player_pos + offset, radius, Color(CYAN.r, CYAN.g, CYAN.b, alpha * 0.08))
+	draw_arc(player_pos + offset, radius, 0.0, TAU, 72, Color(CYAN.r, CYAN.g, CYAN.b, alpha * 0.8), 4.0, true)
+
+
 func _draw_player(offset: Vector2, actor_scale: float = 1.0) -> void:
 	var pos := player_pos + offset
-	if boost_active:
-		var tail_dir := Vector2.LEFT.rotated(player_facing)
-		draw_line(pos + tail_dir * 12.0 * actor_scale, pos + tail_dir * 44.0 * actor_scale, Color(LIME.r, LIME.g, LIME.b, 0.7), 8.0 * actor_scale, true)
+	if boost_active or dash_left > 0.0:
+		var tail_dir := -dash_direction if dash_left > 0.0 else Vector2.LEFT.rotated(player_facing)
+		var trail_color := CYAN if dash_left > 0.0 else (LIME_DARK if active_space_boon == BoonData.BoonType.GOO_TRAIL_BOOST else LIME)
+		draw_line(pos + tail_dir * 12.0 * actor_scale, pos + tail_dir * (58.0 if dash_left > 0.0 else 44.0) * actor_scale, Color(trail_color.r, trail_color.g, trail_color.b, 0.7), 8.0 * actor_scale, true)
 	if spawn_protection_left > 0.0:
 		draw_arc(pos, (PLAYER_RADIUS + 10.0) * actor_scale, 0.0, TAU, 40, Color(0.333, 0.867, 0.878, 0.55), 3.0 * actor_scale, true)
+	if damage_protection_left > 0.0:
+		var damage_alpha := 0.7 if bool(saved.get("reduced_motion", false)) else (0.35 + 0.35 * absf(sin(damage_protection_left * 18.0)))
+		draw_arc(pos, (PLAYER_RADIUS + 7.0) * actor_scale, 0.0, TAU, 40, Color(BOSS_2_CORE.r, BOSS_2_CORE.g, BOSS_2_CORE.b, damage_alpha), 3.0 * actor_scale, true)
+	if invincibility_left > 0.0 or dash_left > 0.0:
+		var shield_color := PURPLE_SOFT if invincibility_left > 0.0 else CYAN
+		draw_circle(pos, (PLAYER_RADIUS + 10.0) * actor_scale, Color(shield_color.r, shield_color.g, shield_color.b, 0.14))
+		draw_arc(pos, (PLAYER_RADIUS + 11.0) * actor_scale, 0.0, TAU, 40, shield_color, 3.5 * actor_scale, true)
 	var camera_transform := Transform2D(0.0, Vector2.ONE * _dialogue_camera_zoom(), 0.0, _dialogue_camera_origin(offset))
 	var player_transform := Transform2D(player_facing + PLAYER_ASSET_ROTATION_OFFSET, Vector2.ONE, 0.0, pos)
 	draw_set_transform_matrix(camera_transform * player_transform)
@@ -2172,6 +2884,18 @@ func _dialogue_layout(speaker_pos: Vector2, text: String, speaker_radius: float)
 		{"x": center_x, "y": above_y, "above": true},
 		{"x": center_x, "y": below_y, "above": false},
 	]
+	# Speakers near the top edge can leave every natural placement competing with
+	# the logo and health bar. Try the same horizontal anchors just below each HUD
+	# block before accepting an overlap.
+	var fallback_xs := [centered_x, inward_x, center_x, safe_left, safe_right - bubble_size.x]
+	for reserved in _dialogue_hud_reserved_rects():
+		var fallback_y := reserved.end.y + 8.0
+		for fallback_x in fallback_xs:
+			candidates.append({
+				"x": fallback_x,
+				"y": fallback_y,
+				"above": fallback_y + bubble_size.y <= speaker_pos.y,
+			})
 	var rect := Rect2()
 	var place_above := true
 	var best_overlap := INF
@@ -2218,6 +2942,7 @@ func _dialogue_hud_reserved_rects() -> Array[Rect2]:
 		_score_bounds().grow(5.0),
 		_timer_bounds().grow(5.0),
 		_boost_bounds().grow(5.0),
+		_health_bounds().grow(5.0),
 	]
 	if combo > 1:
 		reserved.append(_combo_bounds().grow(5.0))
@@ -2260,7 +2985,30 @@ func _draw_reticle(pos: Vector2) -> void:
 
 func _draw_hud(opacity_multiplier: float = 1.0) -> void:
 	_draw_gameplay_logo(opacity_multiplier)
+	_draw_health_hud(opacity_multiplier)
 	_draw_responsive_hud(opacity_multiplier)
+
+
+func _health_bounds() -> Rect2:
+	var visual_unit := _hud_unit()
+	var width := clampf(visual_unit * 0.28, 150.0, 260.0)
+	var height := clampf(visual_unit * 0.034, 18.0, 30.0)
+	return Rect2(Vector2(viewport_size.x * 0.5 - width * 0.5 - 6.0, _hud_top_safe_area() + 14.0), Vector2(width + 12.0, height + 32.0))
+
+
+func _draw_health_hud(opacity_multiplier: float = 1.0) -> void:
+	var bounds := _health_bounds()
+	var opacity := health_hud_opacity * opacity_multiplier
+	var font_size := clampi(roundi(_hud_unit() * 0.021), 12, 18)
+	_draw_text_centered("HEALTH  %d / %d" % [player_health, player_max_health], Vector2(bounds.get_center().x, bounds.position.y + font_size), font_size, Color(PURPLE.r, PURPLE.g, PURPLE.b, opacity))
+	var bar := Rect2(Vector2(bounds.position.x + 6.0, bounds.end.y - clampf(_hud_unit() * 0.034, 18.0, 30.0) - 4.0), Vector2(bounds.size.x - 12.0, clampf(_hud_unit() * 0.034, 18.0, 30.0)))
+	var gap := 4.0
+	var segment_width := (bar.size.x - gap * float(player_max_health - 1)) / float(maxi(1, player_max_health))
+	for i in player_max_health:
+		var segment := Rect2(Vector2(bar.position.x + float(i) * (segment_width + gap), bar.position.y), Vector2(segment_width, bar.size.y))
+		var filled := i < player_health
+		var fill := BOSS_2_CORE if filled else Color(WHITE.r, WHITE.g, WHITE.b, 0.5)
+		_draw_pill(segment, Color(fill.r, fill.g, fill.b, (0.82 if filled else 0.42) * opacity), Color(PURPLE.r, PURPLE.g, PURPLE.b, 0.65 * opacity), 2.0)
 
 
 func _hud_unit() -> float:
@@ -2467,19 +3215,34 @@ func _draw_responsive_boost(visual_unit: float, label_size: int, outline_size: i
 	var meter_width := clampf(visual_unit * 0.36, 135.0, 360.0)
 	var meter_height := clampf(visual_unit * 0.078, 30.0, 76.0)
 	draw_set_transform(origin, rotation, Vector2.ONE)
-	var label_width := font.get_string_size("BOOST", HORIZONTAL_ALIGNMENT_LEFT, -1.0, label_size).x
-	_draw_text_with_outline("BOOST", Vector2(-label_width, 0.0), label_size, Color(DARK_MINT.r, DARK_MINT.g, DARK_MINT.b, opacity), Color(WHITE.r, WHITE.g, WHITE.b, opacity), outline_size, shadow_offset, Color(DARK_MINT.r, DARK_MINT.g, DARK_MINT.b, opacity))
+	var label := _space_hud_label()
+	var label_width := font.get_string_size(label, HORIZONTAL_ALIGNMENT_LEFT, -1.0, label_size).x
+	_draw_text_with_outline(label, Vector2(-label_width, 0.0), label_size, Color(DARK_MINT.r, DARK_MINT.g, DARK_MINT.b, opacity), Color(WHITE.r, WHITE.g, WHITE.b, opacity), outline_size, shadow_offset, Color(DARK_MINT.r, DARK_MINT.g, DARK_MINT.b, opacity))
 	var meter := Rect2(Vector2(-meter_width, meter_height * 0.34), Vector2(meter_width, meter_height))
 	_draw_pill(meter.grow(6.0), Color(WHITE.r, WHITE.g, WHITE.b, 0.28 * opacity), Color.TRANSPARENT, 0.0)
 	_draw_pill(meter, Color(WHITE.r, WHITE.g, WHITE.b, 0.48 * opacity), Color.TRANSPARENT, 0.0)
 	var charge_rect := meter.grow(-6.0)
-	charge_rect.size.x *= boost_charge
+	charge_rect.size.x *= _space_meter_value()
 	if charge_rect.size.x > charge_rect.size.y:
-		_draw_pill(charge_rect, Color(LIME.r, LIME.g, LIME.b, 0.52 * opacity), Color.TRANSPARENT, 0.0)
+		var meter_color := LIME if active_space_boon == BoonData.NO_BOON else BoonData.color(active_space_boon)
+		_draw_pill(charge_rect, Color(meter_color.r, meter_color.g, meter_color.b, 0.58 * opacity), Color.TRANSPARENT, 0.0)
 	var space_size := roundi(meter_height * 0.58)
 	var space_text := "SPACE"
 	var space_width := font.get_string_size(space_text, HORIZONTAL_ALIGNMENT_LEFT, -1.0, space_size).x
 	_draw_text_with_outline(space_text, Vector2(meter.get_center().x - space_width * 0.5, meter.get_center().y + space_size * 0.34), space_size, Color(WHITE.r, WHITE.g, WHITE.b, opacity), Color(WHITE.r, WHITE.g, WHITE.b, 0.01 * opacity), 1, Vector2(4.0, 4.0), Color(DARK_MINT.r, DARK_MINT.g, DARK_MINT.b, 0.62 * opacity))
+	if _boon_level(BoonData.BoonType.CHARGED_BEAM) > 0:
+		var beam_label_size := maxi(12, roundi(float(label_size) * 0.55))
+		var beam_label := "BEAM / HOLD FIRE"
+		var beam_label_width := font.get_string_size(beam_label, HORIZONTAL_ALIGNMENT_LEFT, -1.0, beam_label_size).x
+		var beam_y := -meter_height * 1.05
+		_draw_text_with_outline(beam_label, Vector2(-beam_label_width, beam_y), beam_label_size, Color(PURPLE.r, PURPLE.g, PURPLE.b, opacity), Color(WHITE.r, WHITE.g, WHITE.b, opacity), maxi(1, outline_size / 2), Vector2(2.0, 2.0), Color(DARK_MINT.r, DARK_MINT.g, DARK_MINT.b, opacity))
+		var beam_meter := Rect2(Vector2(-meter_width, beam_y + 7.0), Vector2(meter_width, meter_height * 0.38))
+		_draw_pill(beam_meter, Color(WHITE.r, WHITE.g, WHITE.b, 0.6 * opacity), Color.TRANSPARENT, 0.0)
+		var beam_fill := beam_meter.grow(-4.0)
+		var beam_value := beam_active_left / BoonData.BEAM_DURATION_SECONDS if beam_active_left > 0.0 else beam_charge / BoonData.BEAM_CHARGE_SECONDS
+		beam_fill.size.x *= clampf(beam_value, 0.0, 1.0)
+		if beam_fill.size.x > beam_fill.size.y:
+			_draw_pill(beam_fill, Color(ORANGE_HOT.r, ORANGE_HOT.g, ORANGE_HOT.b, 0.72 * opacity), Color.TRANSPARENT, 0.0)
 	draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 
 
@@ -2489,10 +3252,13 @@ func _boost_bounds() -> Rect2:
 	var origin := Vector2(viewport_size.x - visual_unit * 0.065, viewport_size.y - visual_unit * 0.27)
 	var meter_width := clampf(visual_unit * 0.36, 135.0, 360.0)
 	var meter_height := clampf(visual_unit * 0.078, 30.0, 76.0)
-	var label_width := font.get_string_size("BOOST", HORIZONTAL_ALIGNMENT_LEFT, -1.0, label_size).x
+	var label_width := font.get_string_size(_space_hud_label(), HORIZONTAL_ALIGNMENT_LEFT, -1.0, label_size).x
+	if _boon_level(BoonData.BoonType.CHARGED_BEAM) > 0:
+		label_width = maxf(label_width, font.get_string_size("BEAM / HOLD FIRE", HORIZONTAL_ALIGNMENT_LEFT, -1.0, maxi(12, roundi(float(label_size) * 0.55))).x)
+	var extra_top := meter_height * 1.25 if _boon_level(BoonData.BoonType.CHARGED_BEAM) > 0 else 0.0
 	var local_rect := Rect2(
-		Vector2(-maxf(meter_width + 7.0, label_width + 5.0), -font.get_ascent(label_size) - 5.0),
-		Vector2(maxf(meter_width + 14.0, label_width + 12.0), font.get_ascent(label_size) + meter_height * 1.34 + 14.0)
+		Vector2(-maxf(meter_width + 7.0, label_width + 5.0), -font.get_ascent(label_size) - 5.0 - extra_top),
+		Vector2(maxf(meter_width + 14.0, label_width + 12.0), font.get_ascent(label_size) + meter_height * 1.34 + 14.0 + extra_top)
 	)
 	return _transformed_rect_bounds(local_rect, origin, 0.20)
 
@@ -2502,7 +3268,7 @@ func _draw_menu() -> void:
 	_draw_text_centered("EVERYONE FIGHTS. SOMEONE PROFITS.", Vector2(viewport_size.x * 0.5, viewport_size.y * 0.31), 18, ACCENT_MINT)
 	var labels := ["CULTURE WARS", "HOW TO PLAY", "SETTINGS"]
 	for i in labels.size(): _draw_action_button(_menu_button_rect(i), labels[i], i == 0)
-	_draw_text_centered("WASD  MOVE     MOUSE  AIM     LEFT CLICK  FIRE     SPACE  BOOST", Vector2(viewport_size.x * 0.5, viewport_size.y - 42.0), 15, DARK_MINT)
+	_draw_text_centered("WASD  MOVE     MOUSE  AIM     LEFT CLICK  FIRE     SPACE  ACTIVE ABILITY", Vector2(viewport_size.x * 0.5, viewport_size.y - 42.0), 15, DARK_MINT)
 
 
 func _draw_how_to() -> void:
@@ -2514,16 +3280,16 @@ func _draw_how_to() -> void:
 		["W A S D", "Apply force. Momentum carries you through the dish."],
 		["MOUSE", "Aim the antibiotic particle."],
 		["LEFT CLICK", "Fire pellets — up to six per second."],
-		["SPACE", "Hold to boost. The charge drains, pauses, then recharges."],
+		["SPACE", "Boost at first. Boss boons can replace it with a new ability."],
 		["ESC", "Pause. Losing browser focus pauses automatically."],
 		["GOLD ELITE", "Destroy the tank germ to reveal a permanent item."],
-		["ITEM AURA", "Touch the item before it fades. Duplicates level it up."],
+		["BOSS BOONS", "After each boss, choose one of three permanent run upgrades."],
 	]
 	for i in rows.size():
 		var y := panel.position.y + 56.0 + i * 47.0
 		_draw_text(str(rows[i][0]), Vector2(panel.position.x + 42.0, y), 19, PURPLE)
 		_draw_text(str(rows[i][1]), Vector2(panel.position.x + 230.0, y), 15, DARK_MINT)
-	_draw_text_centered("The discourse is the infection. Any hostile contact still ends the run.", Vector2(viewport_size.x * 0.5, panel.end.y - 30.0), 15, ORANGE_HOT)
+	_draw_text_centered("The discourse is the infection. Three unprotected hits end the run.", Vector2(viewport_size.x * 0.5, panel.end.y - 30.0), 15, ORANGE_HOT)
 	_draw_action_button(_single_button_rect(), "BACK", false)
 
 

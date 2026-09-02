@@ -11,10 +11,12 @@ const MAX_GERMS := 37
 const MAX_FRAGMENTS := 80
 const BASE_PLAYER_FIRE_RATE := 6.0
 const OVERCLOCKED_PLAYER_FIRE_RATE := 9.0
-const ELITE_FIRST_SPAWN := 10.0
-const ELITE_SPAWN_INTERVAL := 15.0
+const ELITE_FIRST_SPAWN := 5.0
+const ELITE_SPAWN_INTERVAL := 10.0
 const BOSS_SCORE_THRESHOLD := 50000
 const BOSS_2_SCORE_THRESHOLD := 100000
+const BOSS_3_SCORE_THRESHOLD := 150000
+const BOSS_STAGE_COUNT := 3
 const BOSS_INITIAL_DASH_DELAY := 2.5
 const BOSS_DASH_WARNING_SECONDS := 0.9
 const BOSS_DASH_SECONDS := 0.6
@@ -27,18 +29,24 @@ const BOSS_VOLLEY_COUNT := 10
 const BOSS_VOLLEY_SPEED := 220.0
 const BOSS_VOLLEY_LIFETIME := 6.0
 const BOSS_VOLLEY_BOUNCES := 1
+const BOSS_RING_INITIAL_DELAY := 7.0
+const BOSS_RING_WARNING_SECONDS := 1.1
+const BOSS_RING_ACTIVE_SECONDS := 1.4
+const BOSS_RING_COOLDOWN := 7.0
+const BOSS_RING_SAFE_WEDGE_RADIANS := PI / 3.0
+const BOSS_RING_THICKNESS := 18.0
 
-static func update_boost(charge: float, delay_left: float, boosting: bool, delta: float) -> Dictionary:
+static func update_boost(charge: float, delay_left: float, boosting: bool, delta: float, duration_multiplier: float = 1.0, recharge_multiplier: float = 1.0) -> Dictionary:
 	var next_charge := charge
 	var next_delay := maxf(0.0, delay_left - delta)
 	var active := boosting and next_charge > 0.0
 	if active:
-		next_charge = maxf(0.0, next_charge - delta / BOOST_DRAIN_SECONDS)
-		next_delay = BOOST_RECHARGE_DELAY
+		next_charge = maxf(0.0, next_charge - delta / (BOOST_DRAIN_SECONDS * maxf(duration_multiplier, 0.001)))
+		next_delay = BOOST_RECHARGE_DELAY / maxf(recharge_multiplier, 0.001)
 		if next_charge <= 0.0:
 			active = false
 	elif next_delay <= 0.0:
-		next_charge = minf(1.0, next_charge + delta / BOOST_RECHARGE_SECONDS)
+		next_charge = minf(1.0, next_charge + delta * maxf(recharge_multiplier, 0.001) / BOOST_RECHARGE_SECONDS)
 	return {"charge": next_charge, "delay": next_delay, "active": active}
 
 
@@ -48,8 +56,8 @@ static func combo_after_kill(previous_combo: int, since_last_kill: float) -> int
 	return 1
 
 
-static func awarded_score(base_score: int, combo: int) -> int:
-	return base_score * maxi(1, combo)
+static func awarded_score(base_score: int, combo: int, point_multiplier: float = 1.0) -> int:
+	return roundi(float(base_score * maxi(1, combo)) * maxf(point_multiplier, 0.0))
 
 
 static func active_germ_cap(run_seconds: float) -> int:
@@ -77,6 +85,8 @@ static func split_result(tier: int) -> Dictionary:
 		GermData.GermTier.BOSS:
 			return {"child_tier": -1, "children": 0, "fragments": 0}
 		GermData.GermTier.BOSS_2:
+			return {"child_tier": -1, "children": 0, "fragments": 0}
+		GermData.GermTier.BOSS_3:
 			return {"child_tier": -1, "children": 0, "fragments": 0}
 	return {"child_tier": -1, "children": 0, "fragments": 0}
 

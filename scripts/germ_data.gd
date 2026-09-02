@@ -1,7 +1,7 @@
 class_name GermData
 extends Resource
 
-enum GermTier { LARGE, MEDIUM, SMALL, ELITE, BOSS, BOSS_2 }
+enum GermTier { LARGE, MEDIUM, SMALL, ELITE, BOSS, BOSS_2, BOSS_3 }
 
 @export var tier: GermTier = GermTier.LARGE
 @export var radius: float = 42.0
