@@ -2,7 +2,7 @@
 
 ## Responsive layout
 
-The arena radius is derived every frame from the viewport and receives a 1.3225× play-space scale (15% larger than the previous 1.15× treatment). Every viewport uses the angled mockup-style score, time, boost, rails, and logo composition through a shared responsive unit. Widths below 1024 CSS pixels reserve a top safe area for the keyboard-and-mouse recommendation.
+The arena radius is derived every frame from the viewport and receives a 1.3225× play-space scale (15% larger than the previous 1.15× treatment). Every viewport uses the angled mockup-style score, time, boost, concentric playspace backdrop, and logo composition through a shared responsive unit. The backdrop follows the supplied artwork with a mint field, a pale outer circle at 1.44× the dish radius, and a soft inset shadow spanning the outer 20% of the white dish. Widths below 1024 CSS pixels reserve a top safe area for the keyboard-and-mouse recommendation.
 
 Gameplay HUD typography uses a 0.72× scale treatment. Logo, score, timer, combo, and boost groups transition to 15% opacity when the player or a germ moves behind them. Speech bubbles and floating score/item popups transition to 28% opacity under the same obstruction rule, ignoring a bubble's own speaker.
 
@@ -86,6 +86,6 @@ The top-center segmented health bar supports three through six health. The lower
 
 The existing Figma text nodes identify the exact face as `{ family: "Excelorate", style: "Regular" }`, but report `hasMissingFont: true` to the remote plugin. The bundled `Excelorate-Font.otf` is committed and used directly by Godot.
 
-The gameplay HUD uses the approved `assets/figma/petri-logo.png` export. Every viewport uses the archived composition's angled outlined score/time blocks, mint side rails, and lower-right dynamic `SPACE` ability pill, plus a beam meter when owned. A shared responsive unit scales and repositions the treatment for standard, wide, and compact layouts without changing its visual language.
+The gameplay HUD uses the approved `assets/figma/petri-logo.png` export. Every viewport uses the archived composition's angled outlined score/time blocks, concentric mint playspace rings, and lower-right dynamic `SPACE` ability pill, plus a beam meter when owned. A shared responsive unit scales and repositions the treatment for standard, wide, and compact layouts without changing its visual language.
 
 When Figma access resumes, continue the design-system ledger from `/private/tmp/design-system-state-petri-v1.json`; do not recreate the completed color variables.

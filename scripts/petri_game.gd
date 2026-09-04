@@ -24,9 +24,8 @@ const BG := Color("#D7FFF8")
 const MINT := Color("#B2DBD5")
 const DARK_MINT := Color("#70A097")
 const ACCENT_MINT := Color("#6FB2AD")
-const GAME_BG := Color("#B5DAD4")
-const RAIL_MINT := Color("#D4EBE7")
-const DISH_EDGE := Color("#C9E6E1")
+const GAME_BG := Color("#B2DBD5")
+const PLAYSPACE_RING := Color("#D1EDE7")
 const WHITE := Color("#FFFFFF")
 const ORANGE := Color("#FFD9A6")
 const ORANGE_HOT := Color("#FF9E73")
@@ -61,6 +60,10 @@ const TURRET_POOL_SIZE := 3
 const MINE_POOL_SIZE := 48
 const PICKUP_POOL_SIZE := 4
 const ARENA_SCALE := 1.3225
+const PLAYSPACE_RING_RADIUS_MULTIPLIER := 1.44
+const DISH_INNER_SHADOW_WIDTH_MULTIPLIER := 0.2
+const DISH_INNER_SHADOW_FALLOFF := 1.7
+const DISH_INNER_SHADOW_LAYERS := 64
 const GERM_SPAWN_TELEGRAPH_SECONDS := 2.5
 const SPLIT_CHILD_SPEED_MULTIPLIER := 0.75
 const ITEM_SPAWN_TELEGRAPH_SECONDS := 0.85
@@ -2351,19 +2354,7 @@ func _draw_game_world() -> void:
 	var camera_zoom := _dialogue_camera_zoom()
 	draw_set_transform(_dialogue_camera_origin(offset), 0.0, Vector2.ONE * camera_zoom)
 	var center := arena_center + offset
-	var visual_unit := _hud_unit()
-	var rail_top := maxf(viewport_size.x * 0.08, arena_center.x - arena_radius - visual_unit * 0.11)
-	var rail_slope := minf(visual_unit * 0.36, viewport_size.x * 0.24)
-	draw_colored_polygon(PackedVector2Array([Vector2.ZERO, Vector2(rail_top, 0), Vector2(maxf(0.0, rail_top - rail_slope), viewport_size.y), Vector2(0, viewport_size.y)]), RAIL_MINT)
-	draw_colored_polygon(PackedVector2Array([Vector2(viewport_size.x - rail_top, 0), Vector2(viewport_size.x, 0), viewport_size, Vector2(minf(viewport_size.x, viewport_size.x - rail_top + rail_slope), viewport_size.y)]), RAIL_MINT)
-	draw_circle(center, arena_radius + minf(viewport_size.x, viewport_size.y) * 0.37, Color(RAIL_MINT.r, RAIL_MINT.g, RAIL_MINT.b, 0.72))
-	draw_circle(center, arena_radius + 34.0, Color(WHITE.r, WHITE.g, WHITE.b, 0.16))
-	for layer in 16:
-		var blend := float(layer + 1) / 16.0
-		var edge_radius := arena_radius + 22.0 * (1.0 - blend)
-		draw_circle(center, edge_radius, DISH_EDGE.lerp(WHITE, blend))
-	draw_circle(center, arena_radius, WHITE)
-	draw_arc(center, arena_radius, 0.0, TAU, 160, Color(ACCENT_MINT.r, ACCENT_MINT.g, ACCENT_MINT.b, 0.26), 2.0, true)
+	_draw_playspace_backdrop(center)
 
 	for patch in goo_patches:
 		if bool(patch.active): _draw_goo_patch(patch, offset)
@@ -2418,6 +2409,16 @@ func _draw_game_world() -> void:
 	_draw_hud(cinematic_hud_opacity)
 	_draw_dialogue_cinematic_frame()
 	_draw_dialogue_bubble(offset)
+
+
+func _draw_playspace_backdrop(center: Vector2) -> void:
+	draw_circle(center, arena_radius * PLAYSPACE_RING_RADIUS_MULTIPLIER, PLAYSPACE_RING)
+	draw_circle(center, arena_radius, GAME_BG)
+	var shadow_width := arena_radius * DISH_INNER_SHADOW_WIDTH_MULTIPLIER
+	for layer in DISH_INNER_SHADOW_LAYERS:
+		var progress := float(layer + 1) / float(DISH_INNER_SHADOW_LAYERS)
+		var shadow_fade := 1.0 - pow(1.0 - progress, DISH_INNER_SHADOW_FALLOFF)
+		draw_circle(center, arena_radius - shadow_width * progress, GAME_BG.lerp(WHITE, shadow_fade))
 
 
 func _draw_dialogue_cinematic_frame() -> void:

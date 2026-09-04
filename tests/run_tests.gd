@@ -212,7 +212,10 @@ func _test_resources_and_scene() -> void:
 	var player_texture := load("res://assets/Specimen/P1/P1.png") as Texture2D
 	_check(player_texture != null and player_texture.get_size() == Vector2(226.0, 157.0), "soft-edged P1 player texture loads at its source size")
 	_check(load("res://scenes/main.tscn") != null, "main scene loads")
-	var draw_order: Array = game.get_script().get_script_constant_map().get("GERM_VISUAL_DRAW_ORDER", [])
+	var script_constants: Dictionary = game.get_script().get_script_constant_map()
+	_check(Color(script_constants.get("GAME_BG")).is_equal_approx(Color("B2DBD5")) and Color(script_constants.get("PLAYSPACE_RING")).is_equal_approx(Color("D1EDE7")), "playspace backdrop uses the mockup mint palette")
+	_check(is_equal_approx(float(script_constants.get("PLAYSPACE_RING_RADIUS_MULTIPLIER")), 1.44) and is_equal_approx(float(script_constants.get("DISH_INNER_SHADOW_WIDTH_MULTIPLIER")), 0.2), "playspace backdrop keeps the mockup ring and inset-shadow proportions")
+	var draw_order: Array = script_constants.get("GERM_VISUAL_DRAW_ORDER", [])
 	var smallest_on_top := draw_order == [GermData.GermTier.BOSS_3, GermData.GermTier.BOSS_2, GermData.GermTier.BOSS, GermData.GermTier.ELITE, GermData.GermTier.LARGE, GermData.GermTier.MEDIUM, GermData.GermTier.SMALL]
 	for i in range(1, draw_order.size()):
 		smallest_on_top = smallest_on_top and game.get("germ_specs")[int(draw_order[i - 1])].radius >= game.get("germ_specs")[int(draw_order[i])].radius
