@@ -4,12 +4,12 @@
 
 [resource]
 script = ExtResource("1")
-tier = 3
-radius = 66.0
-hp = 18
-speed_min = 30.4
-speed_max = 46.4
-score = 600
+tier = 6
+radius = 120.0
+hp = 2200
+speed_min = 38.0
+speed_max = 48.0
+score = 25000
 child_tier = -1
 child_count = 0
-fragment_count = 4
+fragment_count = 0

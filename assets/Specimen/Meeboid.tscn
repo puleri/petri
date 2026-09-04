@@ -1,0 +1,135 @@
+[gd_scene format=3 uid="uid://bilqtmntpl3ir"]
+
+[ext_resource type="Texture2D" uid="uid://bqgsjm0byhyow" path="res://assets/Specimen/Meeboid/Meeboid-4.png" id="1_6cbr3"]
+[ext_resource type="Script" uid="uid://dkbrj7a07oqcy" path="res://assets/Specimen/Meeboid/meeboid.gd" id="1_mapwd"]
+[ext_resource type="Texture2D" uid="uid://c0564a1j8x4ii" path="res://assets/Specimen/Meeboid/Meeboid-3.png" id="2_mapwd"]
+[ext_resource type="Texture2D" uid="uid://b87ibdpaqq1yl" path="res://assets/Specimen/Meeboid/Meeboid-2.png" id="3_lqxss"]
+[ext_resource type="Texture2D" uid="uid://vf0mj4g7nvwm" path="res://assets/Specimen/Meeboid/Meeboid-1.png" id="4_bgyao"]
+
+[sub_resource type="Animation" id="Animation_mapwd"]
+resource_name = "Jiggle"
+length = 0.3
+tracks/0/type = "value"
+tracks/0/imported = false
+tracks/0/enabled = true
+tracks/0/path = NodePath("Layer2:scale")
+tracks/0/interp = 1
+tracks/0/loop_wrap = true
+tracks/0/keys = {
+"times": PackedFloat32Array(0.033333335, 0.13333334, 0.3),
+"transitions": PackedFloat32Array(1, 1, 1),
+"update": 0,
+"values": [Vector2(1, 1), Vector2(1.1, 1.1), Vector2(1, 1)]
+}
+tracks/1/type = "value"
+tracks/1/imported = false
+tracks/1/enabled = true
+tracks/1/path = NodePath("Layer1:scale")
+tracks/1/interp = 1
+tracks/1/loop_wrap = true
+tracks/1/keys = {
+"times": PackedFloat32Array(0, 0.10000001, 0.3),
+"transitions": PackedFloat32Array(1, 1, 1),
+"update": 0,
+"values": [Vector2(1, 1), Vector2(1.1, 1.1), Vector2(1, 1)]
+}
+tracks/2/type = "value"
+tracks/2/imported = false
+tracks/2/enabled = true
+tracks/2/path = NodePath("Layer3:scale")
+tracks/2/interp = 1
+tracks/2/loop_wrap = true
+tracks/2/keys = {
+"times": PackedFloat32Array(0.06666667, 0.16550392, 0.3),
+"transitions": PackedFloat32Array(1, 1, 1),
+"update": 0,
+"values": [Vector2(1, 1), Vector2(1.1, 1.1), Vector2(1, 1)]
+}
+tracks/3/type = "value"
+tracks/3/imported = false
+tracks/3/enabled = true
+tracks/3/path = NodePath("Layer4:scale")
+tracks/3/interp = 1
+tracks/3/loop_wrap = true
+tracks/3/keys = {
+"times": PackedFloat32Array(0.09427313, 0.19917288, 0.3),
+"transitions": PackedFloat32Array(1, 1, 1),
+"update": 0,
+"values": [Vector2(1, 1), Vector2(1.1, 1.1), Vector2(1, 1)]
+}
+
+[sub_resource type="Animation" id="Animation_lqxss"]
+length = 0.001
+tracks/0/type = "value"
+tracks/0/imported = false
+tracks/0/enabled = true
+tracks/0/path = NodePath("Layer2:scale")
+tracks/0/interp = 1
+tracks/0/loop_wrap = true
+tracks/0/keys = {
+"times": PackedFloat32Array(0),
+"transitions": PackedFloat32Array(1),
+"update": 0,
+"values": [Vector2(1, 1)]
+}
+tracks/1/type = "value"
+tracks/1/imported = false
+tracks/1/enabled = true
+tracks/1/path = NodePath("Layer1:scale")
+tracks/1/interp = 1
+tracks/1/loop_wrap = true
+tracks/1/keys = {
+"times": PackedFloat32Array(0),
+"transitions": PackedFloat32Array(1),
+"update": 0,
+"values": [Vector2(1, 1)]
+}
+tracks/2/type = "value"
+tracks/2/imported = false
+tracks/2/enabled = true
+tracks/2/path = NodePath("Layer3:scale")
+tracks/2/interp = 1
+tracks/2/loop_wrap = true
+tracks/2/keys = {
+"times": PackedFloat32Array(0),
+"transitions": PackedFloat32Array(1),
+"update": 0,
+"values": [Vector2(1, 1)]
+}
+tracks/3/type = "value"
+tracks/3/imported = false
+tracks/3/enabled = true
+tracks/3/path = NodePath("Layer4:scale")
+tracks/3/interp = 1
+tracks/3/loop_wrap = true
+tracks/3/keys = {
+"times": PackedFloat32Array(0),
+"transitions": PackedFloat32Array(1),
+"update": 0,
+"values": [Vector2(1, 1)]
+}
+
+[sub_resource type="AnimationLibrary" id="AnimationLibrary_bgyao"]
+_data = {
+&"Jiggle": SubResource("Animation_mapwd"),
+&"RESET": SubResource("Animation_lqxss")
+}
+
+[node name="Meeboid" type="Node2D" unique_id=773224256]
+script = ExtResource("1_mapwd")
+
+[node name="Layer1" type="Sprite2D" parent="." unique_id=990931602]
+texture = ExtResource("1_6cbr3")
+
+[node name="Layer2" type="Sprite2D" parent="." unique_id=1909941501]
+texture = ExtResource("2_mapwd")
+
+[node name="Layer3" type="Sprite2D" parent="." unique_id=73059761]
+position = Vector2(0, -1)
+texture = ExtResource("3_lqxss")
+
+[node name="Layer4" type="Sprite2D" parent="." unique_id=422450006]
+texture = ExtResource("4_bgyao")
+
+[node name="AnimationPlayer" type="AnimationPlayer" parent="." unique_id=885122098]
+libraries/ = SubResource("AnimationLibrary_bgyao")

@@ -2,9 +2,23 @@
 
 ## Responsive layout
 
-The arena radius is derived every frame from the viewport and receives a 1.3225× play-space scale (15% larger than the previous 1.15× treatment). Every viewport uses the angled mockup-style score, time, boost, rails, and logo composition through a shared responsive unit. Widths below 1024 CSS pixels reserve a top safe area for the keyboard-and-mouse recommendation.
+The arena radius is derived every frame from the viewport and receives a 1.3225× play-space scale (15% larger than the previous 1.15× treatment). Every viewport uses the angled mockup-style score, time, boost, concentric playspace backdrop, and logo composition through a shared responsive unit. The backdrop follows the supplied artwork with a mint field, a pale outer circle at 1.44× the dish radius, and a soft inset shadow spanning the outer 20% of the white dish. Widths below 1024 CSS pixels reserve a top safe area for the keyboard-and-mouse recommendation.
+
+Gameplay HUD typography uses a 0.72× scale treatment. Logo, score, timer, combo, and boost groups transition to 15% opacity when the player or a germ moves behind them. Speech bubbles and floating score/item popups transition to 28% opacity under the same obstruction rule, ignoring a bubble's own speaker.
+
+Dialogue runs as a short simulation-freezing cut scene without adding a camera node or runtime allocations to the actor pools. A deterministic draw transform eases from 1× to 1.58× around the speaking germ or player, holds while the line types in, and eases back before the bubble is cleared and gameplay resumes. Lines of one to four words receive a 2.2-second total duration, with another 0.25 seconds added for every word beyond four; the typewriter rate adapts to finish 0.2 seconds before the speaking phase ends. A 24-second start-to-start gate limits the channel to roughly 2.5 cut scenes per minute, with a due protagonist line taking the next available slot rather than interrupting an active speaker. The focused actor pulses inward by at most 5.5%; the HUD fades to 8% prominence while a subtle tint and letterbox frame separate the beat from active play. Manual pause freezes the cut-scene clock. Reduced Motion keeps the pause and complete line but disables the camera zoom, typewriter reveal, and speaker pulse.
 
 Target compositions are 1280×720, 1920×1080, and 2560×1080.
+
+## Germ visuals
+
+Active germs are drawn from the four concentric `Meeboid-4.png` through `Meeboid-1.png` layers; `Meeboid.png` remains a composite preview. Startup builds seven hue-shifted, mipmapped texture sets while preserving the original alpha and relative shading: cyan for large/small, lavender for medium, orange for the elite, dark purple for the first boss, deeper purple for the second boss, and midnight purple for the third boss. The 238-pixel outer layer scales to each existing gameplay radius, so collision geometry and tier statistics remain unchanged. Elite and boss identity rings, health arcs, dash tells, volley warnings, and the contracting-ring tell render around the illustrated body.
+
+The custom canvas renderer uses a fixed painter's order instead of allocating separate z-indexed sprite nodes. Hostiles render from largest to smallest—third boss, second boss, first boss, elite, large, medium, small, then debris—so the smallest threats remain visible when bodies overlap. Pellets and the player continue to render above the hostile stack.
+
+Each pooled germ stores one hit-reaction timer. A surviving hit restarts the supplied 0.3-second outer-to-inner 1.1× layer ripple and a coral flash that peaks at 0.05 seconds and clears by 0.25 seconds. Killing blows still split or disappear immediately. The renderer evaluates these curves directly from pooled state—there are no germ child nodes or per-hit tweens. Reduced Motion clears active hit reactions and suppresses both ripple and flash; future hits animate normally if the preference is disabled again.
+
+The player body uses the soft-edged `P1.png` arrow. Its upward-facing source artwork is rotated 90 degrees into the aim direction and rendered at a 39.1-pixel source width (15% smaller than its initial treatment) while preserving the existing 18-pixel collision radius, dialogue pulse, boost trail, spawn-protection ring, and weapon-upgrade indicators.
 
 ## Gameplay constants
 
@@ -14,14 +28,48 @@ Target compositions are 1280×720, 1920×1080, and 2560×1080.
 - Boost timing: 2 s drain, 0.5 s delay, 3 s recharge
 - Fire rate: 6 pellets/s; 1.25 s lifetime
 - Spawn protection: 1.5 s
+- Player health: 3; unprotected germ, debris, and lethal membrane impacts remove 1 health and grant 1 s of post-hit grace
 - Lethal membrane impact: outward speed over 240 px/s
 - Debris lifetime: 12 s
-- Germ spawn telegraph: 1.02 s pulsing aura before activation
+- Non-boss base movement: large 38.4–60.8, medium 52.8–78.4, small 70.4–105.6, and elite 30.4–46.4 px/s; the existing late-run multiplier still caps at 1.5×
+- Germ spawn telegraph: 2.5 s pulsing aura before activation
+- Split descendants spawn at 75% of their tier's normal velocity
 - Item drop telegraph: 0.85 s item-specific aura before pickup activation
+- Tank elites: first at 5 s, then every 10 s
+- Boss threshold: 50,000 points; spawning pauses until all active germs and debris are gone
+- Boss: radius 88, 240 HP, speed 32–44, 5,000 base score, no split or debris
+- Boss dash: 2.5 s initial delay, 0.9 s direction-lock tell, 0.6 s at 420 px/s, 3 s cooldown
+- Boss reward: reset all item state, refill health to the current maximum, grant 2-damage player pellets for the remainder of the run, then enter boon selection
+- Second boss threshold: 100,000 points, using the same clear-dish entry gate and reserved boss slot
+- Second boss: radius 100, 600 HP, speed 36–48, 10,000 base score, no split or death debris
+- Second-boss volley: first available after 4.5 s of chase time; 0.9 s tell; ten debris at 220 px/s, 6 s lifetime, and one bounce; 6 s cooldown
+- Second boss reward: clear volley debris, reset all item state, refill health to the current maximum, retain 2-damage pellets, increase the player fire rate from 6 to 9 volleys/s, then enter boon selection
+- Third boss threshold: 150,000 points, using the same clear-dish entry gate and shared reserved boss slot
+- Third boss: radius 120, 2,200 HP, speed 38–48, 25,000 base score, no split or death debris; retains the existing dash and radial volley
+- Contracting ring: first available after 7 s of chase time; 1.1 s stationary warning with a locked 60-degree safe wedge; an 18-pixel ring contracts from membrane to center over 1.4 s and repeats after 7 s of chase time
+- Third boss reward: clear volley/ring state, reset all item state, retain the 2-damage/9-volley weapon, add one run-only maximum health, refill health, then enter boon selection
+
+## Post-boss boons
+
+Boss death applies its reward immediately, marks that boss defeated, clears all transient Space/beam/freeze/goo effects, stops player momentum, and enters `BOON_SELECTION`. The three-choice pool is filled with distinct, non-maxed boon types and placed 120 pixels from the arena center (or `arena_radius - 48` in a smaller dish). Choices are collision-inactive for exactly two seconds and never expire. During this state only safe WASD movement advances: run time, pellets, hazards, item timers, cooldowns, dialogue, and spawning remain frozen. Collecting one choice clears all three entries, restarts the elite timer, and either resumes survival or begins the next already-earned cleanup stage. `COMPLETED` is reached only after the third boss's boon is chosen.
+
+`BoonData.BoonType` exposes nine run-only boons. Eight have a two-level cap; Max Health has one level because it immediately establishes the five-health maximum. Space boons share one equipped slot while retaining their individual stored levels; Charged Beam layers onto left click and passive boons need no input. Item resets do not remove boons, but `_start_run()` clears every boon level, restores three health, and resets transient fields without touching the save format.
+
+- Dash Evade: 600 px/s for 0.18 s with a 2.5 s cooldown; level two is 700 px/s for 0.22 s with a 2 s cooldown. Direction uses held movement or aim fallback, contact is invulnerable, and membrane contact ends the dash safely.
+- Speed Boosts: active-mobility speed +15%/+30%, duration +10%/+20%, and recovery 15%/30% faster. It affects the original boost, Dash, and Goo Boost; offers omit it while Invincibility or Freeze occupies Space.
+- Point Multiplier: 1.5×/2× future score after combo multiplication.
+- Invincibility: 2 s with a 12 s cooldown, then 3 s with a 10 s cooldown; hostile, debris, and membrane contact pass through harmlessly.
+- Goo Trail Boost: the normal boost deposits radius-24, 4-second patches every 0.15 s. Level two uses 2× acceleration, 1.7× maximum speed, radius 28, 5-second patches, and a 0.12 s cadence. Goo deals one damage per hostile at most every 0.45 s and can destroy score-bearing debris.
+- Freeze AOE Shock: radius 180 for 3 s with a 10 s cooldown, then radius 220 for 4 s with an 8 s cooldown. Regular germs and debris stop completely; bosses and their attack timers advance at 50% speed.
+- Movement Speed: base acceleration and maximum speed +15%/+30%.
+- Charged Beam: holding fire for 1.5 s prepares a three-second cursor-tracking beam without interrupting pellet autofire. Early release cancels. Beam ticks every 0.2 s for 4 damage at width 18, or 6 damage at width 24 on level two.
+- Max Health: raises the normal current and maximum health from three to five when selected. The third-boss reward adds one to either capacity, producing four or six maximum health. Both upgrades persist through ability resets and reset with a new run.
+
+The top-center segmented health bar supports three through six health. The lower-right HUD changes from `BOOST / SPACE` to the active Space-boon name and cooldown/charge state. Owning Charged Beam adds a separate `BEAM / HOLD FIRE` meter. Reduced Motion preserves every timing and gameplay tell—including ring contraction—while removing boon pulses, goo wobble, beam flicker, and decorative ring pulsing.
 
 ## Elite items
 
-- Tank elite: first at 20 s, then every 30 s; radius 66, 18 HP, speed 38–58, 600 score, four debris, no split
+- Tank elite: first at 5 s, then every 10 s; radius 66, 18 HP, speed 30.4–46.4, 600 score, four debris, no split
 - Item aura: 0.85 s; pickup lifetime: 15 s; pickup radius: 18
 - Permanent item cap: level 3; all-max drops grant one random 15 s level-four overcharge
 - Spinning hitter: 1–4 orbiters at radius 58 and 2.8 rad/s
@@ -36,7 +84,7 @@ Target compositions are 1280×720, 1920×1080, and 2560×1080.
 - Antibody shell: 32/24/16/8 s recharge; blocks germ and debris contact but not membrane impacts
 - Catalytic cleanup: shot debris deals 1 damage at radii 45/60/75; overcharge deals 2 damage at radius 95
 - Seeking enzyme: acquisition radii 170/240/320/500; turn speeds 1.2/2/3/5 rad/s
-- Fixed pools: 36 germs, 80 debris, 240 projectiles, 3 turrets, 48 mines, 24 effect flashes, and 4 pickup/aura slots
+- Fixed pools: 37 germs (35 regular, one elite, one shared milestone-boss slot), 80 debris, 240 projectiles, 3 turrets, 48 mines, 24 effect flashes, 4 pickup/aura slots, 3 boon choices, and 64 goo patches
 
 ## Figma handoff
 
@@ -44,6 +92,6 @@ Target compositions are 1280×720, 1920×1080, and 2560×1080.
 
 The existing Figma text nodes identify the exact face as `{ family: "Excelorate", style: "Regular" }`, but report `hasMissingFont: true` to the remote plugin. The bundled `Excelorate-Font.otf` is committed and used directly by Godot.
 
-The gameplay HUD uses the approved `assets/figma/petri-logo.png` export. Every viewport uses the archived composition's angled outlined score/time blocks, mint side rails, and lower-right `BOOST / SPACE` charge pill. A shared responsive unit scales and repositions the treatment for standard, wide, and compact layouts without changing its visual language.
+The gameplay HUD uses the approved `assets/figma/petri-logo.png` export. Every viewport uses the archived composition's angled outlined score/time blocks, concentric mint playspace rings, and lower-right dynamic `SPACE` ability pill, plus a beam meter when owned. A shared responsive unit scales and repositions the treatment for standard, wide, and compact layouts without changing its visual language.
 
 When Figma access resumes, continue the design-system ledger from `/private/tmp/design-system-state-petri-v1.json`; do not recreate the completed color variables.
