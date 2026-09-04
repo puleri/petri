@@ -1,7 +1,20 @@
 class_name ItemData
 extends RefCounted
 
-enum ItemType { SPINNING_HITTER, AOE, TURRET, RICOCHET, SPREAD, LEAVE_BEHIND }
+enum ItemType {
+	SPINNING_HITTER,
+	AOE,
+	TURRET,
+	RICOCHET,
+	SPREAD,
+	LEAVE_BEHIND,
+	CATALYST,
+	PIERCING_DOSE,
+	INHIBITOR_FIELD,
+	ANTIBODY_SHELL,
+	CATALYTIC_CLEANUP,
+	SEEKING_ENZYME,
+}
 
 const MAX_LEVEL := 3
 const OVERCHARGE_LEVEL := 4
@@ -16,6 +29,12 @@ static func display_name(item_type: int) -> String:
 		ItemType.RICOCHET: return "RICOCHET"
 		ItemType.SPREAD: return "SPREAD"
 		ItemType.LEAVE_BEHIND: return "LEAVE-BEHIND"
+		ItemType.CATALYST: return "CATALYST"
+		ItemType.PIERCING_DOSE: return "PIERCING DOSE"
+		ItemType.INHIBITOR_FIELD: return "INHIBITOR FIELD"
+		ItemType.ANTIBODY_SHELL: return "ANTIBODY SHELL"
+		ItemType.CATALYTIC_CLEANUP: return "CATALYTIC CLEANUP"
+		ItemType.SEEKING_ENZYME: return "SEEKING ENZYME"
 	return "ITEM"
 
 
@@ -27,6 +46,12 @@ static func color(item_type: int) -> Color:
 		ItemType.RICOCHET: return Color("#A9C375")
 		ItemType.SPREAD: return Color("#C474E8")
 		ItemType.LEAVE_BEHIND: return Color("#FFD9A6")
+		ItemType.CATALYST: return Color("#E85D75")
+		ItemType.PIERCING_DOSE: return Color("#4267AC")
+		ItemType.INHIBITOR_FIELD: return Color("#4EAD8A")
+		ItemType.ANTIBODY_SHELL: return Color("#E0A52B")
+		ItemType.CATALYTIC_CLEANUP: return Color("#B35C9B")
+		ItemType.SEEKING_ENZYME: return Color("#2E9CCA")
 	return Color.WHITE
 
 
@@ -90,3 +115,92 @@ static func mine_interval(level: int) -> float:
 
 static func mine_blast_radius(level: int) -> float:
 	return 70.0 if level >= OVERCHARGE_LEVEL else 55.0
+
+
+static func catalyst_shots_per_second(level: int) -> float:
+	match clampi(level, 0, OVERCHARGE_LEVEL):
+		1: return 6.75
+		2: return 7.5
+		3: return 8.5
+		4: return 10.0
+	return 6.0
+
+
+static func catalyst_fire_interval(level: int) -> float:
+	return 1.0 / catalyst_shots_per_second(level)
+
+
+static func piercing_targets(level: int) -> int:
+	match clampi(level, 0, OVERCHARGE_LEVEL):
+		1: return 1
+		2: return 2
+		3: return 3
+		4: return 5
+	return 0
+
+
+static func inhibitor_radius(level: int) -> float:
+	match clampi(level, 0, OVERCHARGE_LEVEL):
+		1: return 110.0
+		2: return 135.0
+		3: return 160.0
+		4: return 190.0
+	return 0.0
+
+
+static func inhibitor_speed_multiplier(level: int) -> float:
+	match clampi(level, 0, OVERCHARGE_LEVEL):
+		1: return 0.8
+		2: return 0.7
+		3: return 0.6
+		4: return 0.45
+	return 1.0
+
+
+static func antibody_recharge(level: int) -> float:
+	match clampi(level, 0, OVERCHARGE_LEVEL):
+		1: return 32.0
+		2: return 24.0
+		3: return 16.0
+		4: return 8.0
+	return INF
+
+
+static func antibody_pulse_radius(level: int) -> float:
+	match clampi(level, 0, OVERCHARGE_LEVEL):
+		1: return 90.0
+		2: return 105.0
+		3: return 120.0
+		4: return 150.0
+	return 0.0
+
+
+static func cleanup_radius(level: int) -> float:
+	match clampi(level, 0, OVERCHARGE_LEVEL):
+		1: return 45.0
+		2: return 60.0
+		3: return 75.0
+		4: return 95.0
+	return 0.0
+
+
+static func cleanup_damage(level: int) -> int:
+	return 2 if level >= OVERCHARGE_LEVEL else (1 if level > 0 else 0)
+
+
+static func seeking_range(level: int) -> float:
+	match clampi(level, 0, OVERCHARGE_LEVEL):
+		1: return 170.0
+		2: return 240.0
+		3: return 320.0
+		4: return 500.0
+	return 0.0
+
+
+static func seeking_turn_speed(level: int) -> float:
+	match clampi(level, 0, OVERCHARGE_LEVEL):
+		1: return 1.2
+		2: return 2.0
+		3: return 3.0
+		4: return 5.0
+	return 0.0

@@ -21,6 +21,7 @@ func _run_suite() -> void:
 	_test_elite_and_pickup_flow()
 	_test_item_selection_and_overcharge()
 	_test_item_combat_effects()
+	_test_additional_item_combat_effects()
 	_test_long_run_pool_stability()
 	await process_frame
 	await process_frame
@@ -124,13 +125,19 @@ func _test_resources_and_scene() -> void:
 
 
 func _test_item_specs() -> void:
-	_check(ItemData.ItemType.size() == 6 and ItemData.MAX_LEVEL == 3, "six item types with level-three cap")
+	_check(ItemData.ItemType.size() == 12 and ItemData.MAX_LEVEL == 3, "twelve item types with level-three cap")
 	_check(ItemData.hitter_count(1) == 1 and ItemData.hitter_count(4) == 4, "spinning hitter count curve")
 	_check(is_equal_approx(ItemData.aoe_radius(3), 170.0) and is_equal_approx(ItemData.aoe_interval(4), 2.75), "AOE radius and interval curve")
 	_check(is_equal_approx(ItemData.turret_interval(3), 0.8) and is_equal_approx(ItemData.turret_interval(4), 0.4), "turret overcharge fire rate")
 	_check(ItemData.ricochet_bounces(3) == 3 and is_equal_approx(ItemData.ricochet_lifetime(3), 2.3), "ricochet bounce and lifetime curve")
 	_check(ItemData.spread_angles(3).size() == 7 and is_equal_approx(absf(ItemData.spread_angles(3)[6]), deg_to_rad(36.0)), "spread count and outer angle")
 	_check(is_equal_approx(ItemData.mine_interval(1), 1.4) and is_equal_approx(ItemData.mine_blast_radius(4), 70.0), "leave-behind mine curve")
+	_check(is_equal_approx(ItemData.catalyst_shots_per_second(3), 8.5) and is_equal_approx(ItemData.catalyst_shots_per_second(4), 10.0), "catalyst fire-rate curve")
+	_check(ItemData.piercing_targets(1) == 1 and ItemData.piercing_targets(4) == 5, "piercing dose target curve")
+	_check(is_equal_approx(ItemData.inhibitor_radius(3), 160.0) and is_equal_approx(ItemData.inhibitor_speed_multiplier(4), 0.45), "inhibitor field curve")
+	_check(is_equal_approx(ItemData.antibody_recharge(3), 16.0) and is_equal_approx(ItemData.antibody_pulse_radius(4), 150.0), "antibody shell curve")
+	_check(is_equal_approx(ItemData.cleanup_radius(3), 75.0) and ItemData.cleanup_damage(4) == 2, "catalytic cleanup curve")
+	_check(is_equal_approx(ItemData.seeking_range(3), 320.0) and is_equal_approx(ItemData.seeking_turn_speed(4), 5.0), "seeking enzyme curve")
 
 
 func _test_elite_and_pickup_flow() -> void:
@@ -277,6 +284,75 @@ func _test_item_combat_effects() -> void:
 	_free_game(game)
 
 
+func _test_additional_item_combat_effects() -> void:
+	var game := _new_game()
+	game.call("_start_run")
+	_clear_combat(game)
+	var levels: Array = game.get("item_levels")
+	var center := Vector2(game.get("arena_center"))
+
+	levels[ItemData.ItemType.CATALYST] = 3
+	game.call("_fire_pellet")
+	_check(is_equal_approx(float(game.get("fire_cooldown")), ItemData.catalyst_fire_interval(3)), "catalyst reduces the player firing interval")
+
+	_clear_combat(game)
+	levels[ItemData.ItemType.PIERCING_DOSE] = 1
+	var stacked_target := center + Vector2.RIGHT * 80.0
+	game.call("_spawn_germ", GermData.GermTier.ELITE, stacked_target)
+	game.call("_spawn_projectile", stacked_target, Vector2.RIGHT, 0.0, 2.0, 0, 0)
+	game.call("_resolve_projectile_hits")
+	game.call("_resolve_projectile_hits")
+	_check(int(Array(game.get("germs"))[GameMath.MAX_REGULAR_GERMS].hp) == 17, "piercing projectile cannot repeatedly damage the same target")
+	_clear_combat(game)
+	game.call("_spawn_germ", GermData.GermTier.SMALL, stacked_target)
+	game.call("_spawn_germ", GermData.GermTier.SMALL, stacked_target)
+	game.call("_spawn_projectile", stacked_target, Vector2.RIGHT, 0.0, 2.0, 0, 0)
+	game.call("_resolve_projectile_hits")
+	_check(not bool(Array(game.get("germs"))[0].active) and not bool(Array(game.get("germs"))[1].active), "piercing dose damages distinct overlapping targets once")
+	_check(not bool(Array(game.get("pellets"))[0].active), "level-one piercing projectile expires after two targets")
+
+	_clear_combat(game)
+	levels[ItemData.ItemType.INHIBITOR_FIELD] = 1
+	game.call("_spawn_germ", GermData.GermTier.SMALL, center + Vector2.RIGHT * 50.0)
+	Array(game.get("germs"))[0].vel = Vector2.LEFT * 100.0
+	var inhibitor_start := Vector2(Array(game.get("germs"))[0].pos)
+	game.call("_update_germs", 0.1)
+	var inhibitor_distance := inhibitor_start.distance_to(Vector2(Array(game.get("germs"))[0].pos))
+	_check(is_equal_approx(inhibitor_distance, 8.0), "inhibitor field slows nearby germ movement")
+
+	_clear_combat(game)
+	levels[ItemData.ItemType.ANTIBODY_SHELL] = 1
+	game.set("spawn_protection_left", 0.0)
+	game.call("_spawn_germ", GermData.GermTier.SMALL, center)
+	game.call("_resolve_hostile_hits")
+	_check(int(game.get("state")) == 2 and is_equal_approx(float(game.get("antibody_cooldown")), 32.0), "ready antibody shell prevents one hostile collision")
+	Array(game.get("germs"))[0].pos = center
+	game.set("spawn_protection_left", 0.0)
+	game.call("_resolve_hostile_hits")
+	_check(int(game.get("state")) == 5, "recharging antibody shell does not prevent another collision")
+
+	game.call("_start_run")
+	_clear_combat(game)
+	levels = game.get("item_levels")
+	levels[ItemData.ItemType.CATALYTIC_CLEANUP] = 1
+	game.call("_spawn_germ", GermData.GermTier.SMALL, center + Vector2.RIGHT * 30.0)
+	Array(game.get("debris"))[0] = {"active": true, "pos": center, "vel": Vector2.ZERO, "life": 10.0, "angle": 0.0, "spin": 0.0, "hitter_cooldown": 0.0}
+	game.call("_spawn_projectile", center, Vector2.RIGHT, 0.0, 2.0, 0, 0)
+	game.call("_resolve_projectile_hits")
+	_check(not bool(Array(game.get("germs"))[0].active) and int(game.get("score")) == 60, "catalytic cleanup turns shot debris into germ damage")
+
+	game.call("_start_run")
+	_clear_combat(game)
+	levels = game.get("item_levels")
+	levels[ItemData.ItemType.SEEKING_ENZYME] = 1
+	game.call("_spawn_germ", GermData.GermTier.SMALL, center + Vector2(120.0, 60.0))
+	game.call("_spawn_projectile", center, Vector2.RIGHT, 100.0, 2.0, 0, 0)
+	var acquired_target := int(Array(game.get("pellets"))[0].seek_target)
+	game.call("_update_pellets", 0.1)
+	_check(acquired_target == 0 and Vector2(Array(game.get("pellets"))[0].vel).y > 0.0, "seeking enzyme acquires a germ and bends its projectile")
+	_free_game(game)
+
+
 func _test_long_run_pool_stability() -> void:
 	var packed: PackedScene = load("res://scenes/main.tscn")
 	var game := packed.instantiate()
@@ -315,7 +391,7 @@ func _test_long_run_pool_stability() -> void:
 	_check(germ_pool.size() == 36 and active_germs <= 36, "ten-minute run respects regular plus elite germ cap")
 	_check(debris_pool.size() == 80 and active_debris <= 80, "ten-minute run respects fragment pool cap")
 	_check(pellet_pool.size() == 240, "projectile pool remains fixed")
-	_check(Array(game.get("turrets")).size() == 3 and Array(game.get("mines")).size() == 48, "item combat pools remain fixed")
+	_check(Array(game.get("turrets")).size() == 3 and Array(game.get("mines")).size() == 48 and Array(game.get("effect_flashes")).size() == 24, "item combat and effect pools remain fixed")
 	_check(Array(game.get("pickups")).size() == 4 and Array(game.get("item_warnings")).size() == 4, "pickup and item warning pools remain fixed")
 	_check(_count_nodes(game) == initial_node_count, "ten-minute simulation leaks no nodes")
 	audio_manager.call("stop_all")

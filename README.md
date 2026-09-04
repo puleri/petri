@@ -11,7 +11,7 @@ PETRI is a single-player, desktop-browser survival game built with Godot 4.7.2 a
 - `Escape` — pause/resume
 - `R` — restart after game over
 
-Items activate automatically after collection. Spinning hitters, AOE pulses, turrets, ricochet, spread shots, and leave-behind mines can each reach level three; fully maxed builds receive temporary level-four overcharges.
+Items activate automatically after collection. The twelve-item pool includes spinning hitters, AOE pulses, turrets, ricochet, spread shots, leave-behind mines, faster fire, piercing pellets, a slowing field, a rechargeable contact shell, debris-triggered blasts, and seeking pellets. Each item can reach level three; fully maxed builds receive temporary level-four overcharges.
 
 Space is exclusively boost. There is no syringe action.
 
@@ -31,7 +31,7 @@ The project uses the Compatibility renderer and contains no threaded gameplay or
 godot --headless --path . --script tests/run_tests.gd
 ```
 
-The deterministic suite covers boost timing, combo scoring, germ splits, elite cadence, pickup lifecycle, all six item effects, overcharge, difficulty ramping, persistence, collision outcomes, fixed pools, and scene loading.
+The deterministic suite covers boost timing, combo scoring, germ splits, elite cadence, pickup lifecycle, all twelve item effects, overcharge, difficulty ramping, persistence, collision outcomes, fixed pools, and scene loading.
 
 ## Export for web
 
@@ -71,5 +71,5 @@ No remote is created until a repository URL is supplied.
 - `scripts/save_store.gd` — `user://petri.cfg` persistence
 - `scripts/audio_manager.gd` — runtime-synthesized original SFX and ambient hum, unlocked after user interaction
 
-The runtime preallocates 35 regular germs plus one elite, 80 fragments, 240 projectiles, three turrets, 48 mines, and four pickup/aura slots. No account, networking, backend, leaderboard, touch controls, or per-projectile node creation is included in v1.
+The runtime preallocates 35 regular germs plus one elite, 80 fragments, 240 projectiles, three turrets, 48 mines, 24 effect flashes, and four pickup/aura slots. No account, networking, backend, leaderboard, touch controls, or per-projectile node creation is included in v1.
 # petri

@@ -30,7 +30,13 @@ Target compositions are 1280×720, 1920×1080, and 2560×1080.
 - Ricochet: 1–4 membrane bounces with 1.6–2.65 s projectile lifetimes
 - Spread: 3/5/7/9 pellets at symmetric 12° steps
 - Leave-behinds: 1.4/1.1/0.85/0.6 s mine cadence; 55 radius or 70 while overcharged
-- Fixed pools: 36 germs, 80 debris, 240 projectiles, 3 turrets, 48 mines, and 4 pickup/aura slots
+- Catalyst: 6.75/7.5/8.5/10 shots per second
+- Piercing dose: 1/2/3/5 additional distinct targets per pellet
+- Inhibitor field: radii 110/135/160/190; hostile speed multipliers 0.8/0.7/0.6/0.45
+- Antibody shell: 32/24/16/8 s recharge; blocks germ and debris contact but not membrane impacts
+- Catalytic cleanup: shot debris deals 1 damage at radii 45/60/75; overcharge deals 2 damage at radius 95
+- Seeking enzyme: acquisition radii 170/240/320/500; turn speeds 1.2/2/3/5 rad/s
+- Fixed pools: 36 germs, 80 debris, 240 projectiles, 3 turrets, 48 mines, 24 effect flashes, and 4 pickup/aura slots
 
 ## Figma handoff
 
