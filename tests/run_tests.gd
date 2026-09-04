@@ -22,6 +22,7 @@ func _run_suite() -> void:
 	_test_culture_wars_dialogue()
 	_test_timer_occlusion()
 	_test_item_specs()
+	_test_projectile_trails()
 	_test_elite_and_pickup_flow()
 	_test_item_selection_and_overcharge()
 	_test_item_combat_effects()
@@ -604,6 +605,88 @@ func _test_item_combat_effects() -> void:
 	Array(game.get("mines"))[0].arm = 0.0
 	game.call("_update_mines", 0.0)
 	_check(not bool(Array(game.get("mines"))[0].active) and not bool(Array(game.get("germs"))[0].active), "leave-behind mine arms, triggers, and deals area damage")
+	_free_game(game)
+
+
+func _test_projectile_trails() -> void:
+	var game := _new_game()
+	_clear_combat(game)
+	var constants: Dictionary = game.get_script().get_script_constant_map()
+	var capacity := int(constants.get("PROJECTILE_TRAIL_CAPACITY"))
+	var pellet_pool: Array = game.get("pellets")
+	var trail_storage: PackedVector2Array = game.get("projectile_trail_points")
+	_check(capacity == 6 and trail_storage.size() == pellet_pool.size() * capacity, "projectile trails use one fixed six-sample buffer per pool slot")
+	_check(int(game.call("_projectile_trail_sample_limit", 0)) == 6 and int(game.call("_projectile_trail_sample_limit", 1)) == 4, "player and turret projectiles use full and subtle trail profiles")
+
+	var center := Vector2(game.get("arena_center"))
+	var gameplay_rng: RandomNumberGenerator = game.get("rng")
+	gameplay_rng.seed = 8675309
+	var gameplay_rng_state := gameplay_rng.state
+	game.call("_spawn_projectile", center, Vector2.RIGHT, 520.0, 2.0, 0, 0)
+	var projectile: Dictionary = pellet_pool[0]
+	var spawn_point: Vector2 = game.call("_projectile_trail_point", 0, projectile, 0)
+	_check(int(projectile.trail_count) == 1 and int(projectile.trail_head) == 0 and is_zero_approx(float(projectile.trail_distance)) and spawn_point.is_equal_approx(center), "fresh projectiles initialize an anchored trail without stale samples")
+	_check(gameplay_rng.state == gameplay_rng_state, "projectile visual seeds do not perturb gameplay randomness")
+
+	game.call("_update_pellets", 0.07)
+	projectile = pellet_pool[0]
+	var evenly_spaced := int(projectile.trail_count) == 6
+	for point_index in range(1, int(projectile.trail_count)):
+		var previous: Vector2 = game.call("_projectile_trail_point", 0, projectile, point_index - 1)
+		var current: Vector2 = game.call("_projectile_trail_point", 0, projectile, point_index)
+		evenly_spaced = evenly_spaced and is_equal_approx(previous.distance_to(current), 7.0)
+	var newest: Vector2 = game.call("_projectile_trail_point", 0, projectile, int(projectile.trail_count) - 1)
+	_check(evenly_spaced and newest.distance_to(Vector2(projectile.pos)) < 7.0, "trail sampling stays distance-based and caps at six chronological points")
+
+	var stepped_game := _new_game()
+	_clear_combat(stepped_game)
+	stepped_game.call("_spawn_projectile", center, Vector2.RIGHT, 520.0, 2.0, 0, 0)
+	for step in 7:
+		stepped_game.call("_update_pellets", 0.01)
+	var stepped_projectile: Dictionary = Array(stepped_game.get("pellets"))[0]
+	var frame_rate_independent := int(stepped_projectile.trail_count) == int(projectile.trail_count)
+	for point_index in int(projectile.trail_count):
+		var single_step_point: Vector2 = game.call("_projectile_trail_point", 0, projectile, point_index)
+		var multi_step_point: Vector2 = stepped_game.call("_projectile_trail_point", 0, stepped_projectile, point_index)
+		frame_rate_independent = frame_rate_independent and single_step_point.distance_to(multi_step_point) <= 0.001
+	_check(frame_rate_independent and absf(float(stepped_projectile.trail_distance) - float(projectile.trail_distance)) <= 0.001, "trail samples are independent of simulation step size")
+	_free_game(stepped_game)
+
+	pellet_pool[0].active = false
+	var reused_position := center + Vector2.UP * 24.0
+	game.call("_spawn_projectile", reused_position, Vector2.RIGHT, 0.0, 2.0, 0, 0)
+	projectile = pellet_pool[0]
+	var reused_point: Vector2 = game.call("_projectile_trail_point", 0, projectile, 0)
+	_check(int(projectile.trail_count) == 1 and int(projectile.trail_head) == 0 and is_zero_approx(float(projectile.trail_distance)) and reused_point.is_equal_approx(reused_position), "reused projectile slots reset their ring-buffer state")
+
+	_clear_projectiles(game)
+	game.call("_spawn_projectile", center, Vector2.RIGHT, 520.0, 2.0, 0, 1)
+	game.call("_update_pellets", 0.07)
+	var turret_projectile: Dictionary = pellet_pool[0]
+	_check(int(turret_projectile.trail_count) == 4, "turret trails wrap at their shorter four-sample limit")
+
+	var saved_data: Dictionary = game.get("saved")
+	saved_data.reduced_motion = true
+	var reduced_count_before := int(turret_projectile.trail_count)
+	game.call("_update_pellets", 0.01)
+	turret_projectile = pellet_pool[0]
+	_check(is_zero_approx(float(game.call("_projectile_trail_wobble", turret_projectile, 1, 0.5))) and is_equal_approx(float(game.call("_projectile_head_scale", turret_projectile)), 1.0) and int(turret_projectile.trail_count) >= reduced_count_before, "Reduced Motion keeps trail sampling but removes projectile animation")
+
+	_clear_projectiles(game)
+	var radius := float(game.get("arena_radius"))
+	game.call("_spawn_projectile", center + Vector2.RIGHT * (radius - 13.0), Vector2.RIGHT, 520.0, 2.0, 1, 0)
+	game.call("_update_pellets", 0.02)
+	game.call("_update_pellets", 0.02)
+	projectile = pellet_pool[0]
+	var ricochet_trail_valid := bool(projectile.active) and int(projectile.bounces) == 0 and int(projectile.trail_count) >= 3
+	var ricochet_points: Array[Vector2] = []
+	for point_index in int(projectile.trail_count):
+		var point: Vector2 = game.call("_projectile_trail_point", 0, projectile, point_index)
+		ricochet_points.append(point)
+		ricochet_trail_valid = ricochet_trail_valid and point.distance_to(center) <= radius - 5.0 + 0.001
+	if ricochet_points.size() >= 3:
+		ricochet_trail_valid = ricochet_trail_valid and ricochet_points[0].x < ricochet_points[1].x and ricochet_points[2].x < ricochet_points[1].x
+	_check(ricochet_trail_valid, "ricochet trails preserve their bend without sampling outside the membrane")
 	_free_game(game)
 
 
@@ -1208,6 +1291,7 @@ func _test_long_run_pool_stability() -> void:
 	var germ_pool: Array = game.get("germs")
 	var debris_pool: Array = game.get("debris")
 	var pellet_pool: Array = game.get("pellets")
+	var projectile_trail_storage: PackedVector2Array = game.get("projectile_trail_points")
 	var active_germs := 0
 	var active_debris := 0
 	for germ in germ_pool:
@@ -1216,7 +1300,7 @@ func _test_long_run_pool_stability() -> void:
 		if bool(fragment.active): active_debris += 1
 	_check(germ_pool.size() == 37 and active_germs <= 37, "ten-minute run respects regular, elite, and boss germ cap")
 	_check(debris_pool.size() == 80 and active_debris <= 80, "ten-minute run respects fragment pool cap")
-	_check(pellet_pool.size() == 240, "projectile pool remains fixed")
+	_check(pellet_pool.size() == 240 and projectile_trail_storage.size() == 1440, "projectile and trail pools remain fixed")
 	_check(Array(game.get("turrets")).size() == 3 and Array(game.get("mines")).size() == 48, "item combat pools remain fixed")
 	_check(Array(game.get("pickups")).size() == 4 and Array(game.get("item_warnings")).size() == 4, "pickup and item warning pools remain fixed")
 	_check(Array(game.get("boon_choices")).size() == 3 and Array(game.get("goo_patches")).size() == 64, "boon selection and goo pools remain fixed")

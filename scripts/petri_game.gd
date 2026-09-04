@@ -56,6 +56,14 @@ const PELLET_LIFETIME := 1.25
 const SPAWN_PROTECTION := 1.5
 const DEBRIS_LIFETIME := 12.0
 const PELLET_POOL_SIZE := 240
+const PROJECTILE_TRAIL_CAPACITY := 6
+const PROJECTILE_TRAIL_PLAYER_SAMPLES := 6
+const PROJECTILE_TRAIL_TURRET_SAMPLES := 4
+const PROJECTILE_TRAIL_SAMPLE_DISTANCE := 7.0
+const PROJECTILE_TRAIL_PLAYER_WOBBLE := 2.25
+const PROJECTILE_TRAIL_TURRET_WOBBLE := 1.2
+const PROJECTILE_TRAIL_PHASE_SPEED := 17.0
+const PROJECTILE_HEAD_WARBLE_AMOUNT := 0.05
 const TURRET_POOL_SIZE := 3
 const MINE_POOL_SIZE := 48
 const PICKUP_POOL_SIZE := 4
@@ -199,6 +207,8 @@ var beam_tick_left := 0.0
 var beam_direction := Vector2.RIGHT
 
 var pellets: Array[Dictionary] = []
+var projectile_trail_points := PackedVector2Array()
+var projectile_visual_sequence := 0
 var germs: Array[Dictionary] = []
 var debris: Array[Dictionary] = []
 var spawn_warnings: Array[Dictionary] = []
@@ -250,8 +260,9 @@ func _ready() -> void:
 
 
 func _create_pools() -> void:
+	projectile_trail_points.resize(PELLET_POOL_SIZE * PROJECTILE_TRAIL_CAPACITY)
 	for i in PELLET_POOL_SIZE:
-		pellets.append({"active": false, "pos": Vector2.ZERO, "vel": Vector2.ZERO, "life": 0.0, "bounces": 0, "owner": ProjectileOwner.PLAYER, "damage": 1})
+		pellets.append({"active": false, "pos": Vector2.ZERO, "vel": Vector2.ZERO, "life": 0.0, "bounces": 0, "owner": ProjectileOwner.PLAYER, "damage": 1, "trail_head": 0, "trail_count": 0, "trail_distance": 0.0, "trail_seed": 0.0})
 	for i in GameMath.MAX_GERMS:
 		germs.append({"active": false, "tier": GermData.GermTier.LARGE, "pos": Vector2.ZERO, "vel": Vector2.ZERO, "move_speed": 0.0, "hp": 0, "phase": 0.0, "hitter_cooldown": 0.0, "goo_hit_cooldown": 0.0, "freeze_left": 0.0, "hit_reaction_left": 0.0, "topic_id": -1, "stance": -1, "dash_phase": BossDashPhase.CHASE, "dash_timer": INF, "dash_direction": Vector2.ZERO, "volley_timer": INF, "volley_rotation": 0.0, "ring_timer": INF, "ring_angle": 0.0, "ring_hit_player": false})
 	for i in GameMath.MAX_FRAGMENTS:
@@ -830,6 +841,9 @@ func _spawn_projectile(at: Vector2, direction: Vector2, speed: float, life: floa
 	for i in pellets.size():
 		if bool(pellets[i].active):
 			continue
+		projectile_trail_points[i * PROJECTILE_TRAIL_CAPACITY] = at
+		var trail_seed := fposmod(float(projectile_visual_sequence) * 2.39996323 + float(i) * 0.75487767, TAU)
+		projectile_visual_sequence += 1
 		pellets[i] = {
 			"active": true,
 			"pos": at,
@@ -838,6 +852,10 @@ func _spawn_projectile(at: Vector2, direction: Vector2, speed: float, life: floa
 			"bounces": bounces,
 			"owner": owner,
 			"damage": damage,
+			"trail_head": 0,
+			"trail_count": 1,
+			"trail_distance": 0.0,
+			"trail_seed": trail_seed,
 		}
 		return true
 	return false
@@ -848,6 +866,7 @@ func _update_pellets(delta: float) -> void:
 		if not bool(pellets[i].active):
 			continue
 		var p := pellets[i]
+		var previous_pos := Vector2(p.pos)
 		p.pos += p.vel * delta
 		p.life = float(p.life) - delta
 		var edge := Vector2(p.pos) - arena_center
@@ -861,7 +880,45 @@ func _update_pellets(delta: float) -> void:
 				p.active = false
 		if float(p.life) <= 0.0:
 			p.active = false
+		if bool(p.active):
+			_record_projectile_trail(i, previous_pos, Vector2(p.pos), p)
 		pellets[i] = p
+
+
+func _projectile_trail_sample_limit(owner: int) -> int:
+	return PROJECTILE_TRAIL_TURRET_SAMPLES if owner == ProjectileOwner.TURRET else PROJECTILE_TRAIL_PLAYER_SAMPLES
+
+
+func _append_projectile_trail_point(index: int, point: Vector2, projectile: Dictionary) -> void:
+	var limit := _projectile_trail_sample_limit(int(projectile.owner))
+	var head := (int(projectile.trail_head) + 1) % limit
+	projectile_trail_points[index * PROJECTILE_TRAIL_CAPACITY + head] = point
+	projectile.trail_head = head
+	projectile.trail_count = mini(int(projectile.trail_count) + 1, limit)
+
+
+func _record_projectile_trail(index: int, from: Vector2, to: Vector2, projectile: Dictionary) -> void:
+	var segment := to - from
+	var segment_length := segment.length()
+	if segment_length <= 0.0001:
+		return
+	var distance_since_sample := float(projectile.trail_distance)
+	var consumed := 0.0
+	var distance_to_next := PROJECTILE_TRAIL_SAMPLE_DISTANCE - distance_since_sample
+	while segment_length - consumed >= distance_to_next:
+		consumed += distance_to_next
+		_append_projectile_trail_point(index, from + segment * (consumed / segment_length), projectile)
+		distance_to_next = PROJECTILE_TRAIL_SAMPLE_DISTANCE
+		distance_since_sample = 0.0
+	projectile.trail_distance = distance_since_sample + segment_length - consumed
+
+
+func _projectile_trail_point(index: int, projectile: Dictionary, ordered_index: int) -> Vector2:
+	var count := int(projectile.trail_count)
+	var limit := _projectile_trail_sample_limit(int(projectile.owner))
+	var oldest := posmod(int(projectile.trail_head) - count + 1, limit)
+	var slot := (oldest + ordered_index) % limit
+	return projectile_trail_points[index * PROJECTILE_TRAIL_CAPACITY + slot]
 
 
 func _update_germs(delta: float) -> void:
@@ -2118,6 +2175,7 @@ func _dialogue_intensity(tier: int) -> int:
 
 
 func _start_run() -> void:
+	projectile_visual_sequence = 0
 	for i in pellets.size(): pellets[i].active = false
 	for i in germs.size():
 		germs[i].active = false
@@ -2381,11 +2439,14 @@ func _draw_game_world() -> void:
 			_draw_debris(Vector2(d.pos) + offset, float(d.angle), int(d.get("source", DebrisSource.REGULAR)))
 			if float(d.get("freeze_left", 0.0)) > 0.0:
 				draw_arc(Vector2(d.pos) + offset, 15.0, 0.0, TAU, 24, Color(CYAN.r, CYAN.g, CYAN.b, 0.78), 2.0, true)
+	for i in pellets.size():
+		if bool(pellets[i].active):
+			_draw_projectile_trail(i, pellets[i], offset)
 	for p in pellets:
 		if bool(p.active):
 			var upgraded_player_shot := int(p.owner) == ProjectileOwner.PLAYER and int(p.get("damage", 1)) > 1
 			var pellet_color := ORANGE_HOT if upgraded_player_shot else (LIME if int(p.owner) == ProjectileOwner.PLAYER else PURPLE_SOFT)
-			var pellet_radius := 7.0 if upgraded_player_shot else 5.0
+			var pellet_radius := (7.0 if upgraded_player_shot else 5.0) * _projectile_head_scale(p)
 			draw_circle(Vector2(p.pos) + offset, pellet_radius, pellet_color)
 			draw_arc(Vector2(p.pos) + offset, pellet_radius + 1.5, 0.0, TAU, 18, WHITE if upgraded_player_shot else (LIME_DARK if int(p.owner) == ProjectileOwner.PLAYER else PURPLE), 1.5, true)
 	_draw_beam(offset)
@@ -2562,6 +2623,72 @@ func _draw_goo_patch(patch: Dictionary, offset: Vector2) -> void:
 	var radius := float(patch.radius) + motion
 	draw_circle(pos, radius, Color(LIME_DARK.r, LIME_DARK.g, LIME_DARK.b, 0.18 * alpha))
 	draw_arc(pos, radius, 0.0, TAU, 30, Color(LIME_DARK.r, LIME_DARK.g, LIME_DARK.b, 0.52 * alpha), 2.0, true)
+
+
+func _projectile_trail_wobble(projectile: Dictionary, point_index: int, progress: float) -> float:
+	if bool(saved.get("reduced_motion", false)):
+		return 0.0
+	var amplitude := PROJECTILE_TRAIL_TURRET_WOBBLE if int(projectile.owner) == ProjectileOwner.TURRET else PROJECTILE_TRAIL_PLAYER_WOBBLE
+	var envelope := sin(clampf(progress, 0.0, 1.0) * PI)
+	return sin(run_time * PROJECTILE_TRAIL_PHASE_SPEED + float(projectile.trail_seed) + float(point_index) * 1.7) * amplitude * envelope
+
+
+func _projectile_head_scale(projectile: Dictionary) -> float:
+	if bool(saved.get("reduced_motion", false)):
+		return 1.0
+	return 1.0 + sin(run_time * 18.0 + float(projectile.trail_seed)) * PROJECTILE_HEAD_WARBLE_AMOUNT
+
+
+func _projectile_trail_visual_point(index: int, projectile: Dictionary, point_index: int) -> Vector2:
+	var count := int(projectile.trail_count)
+	if point_index >= count:
+		return Vector2(projectile.pos)
+	var point := _projectile_trail_point(index, projectile, point_index)
+	var previous := _projectile_trail_point(index, projectile, maxi(0, point_index - 1))
+	var following := Vector2(projectile.pos) if point_index + 1 >= count else _projectile_trail_point(index, projectile, point_index + 1)
+	var tangent := following - previous
+	if tangent.length_squared() <= 0.0001:
+		tangent = Vector2(projectile.vel)
+	var normal := Vector2(-tangent.y, tangent.x).normalized()
+	var progress := float(point_index) / float(maxi(count, 1))
+	return point + normal * _projectile_trail_wobble(projectile, point_index, progress)
+
+
+func _draw_projectile_trail(index: int, projectile: Dictionary, offset: Vector2) -> void:
+	var count := int(projectile.trail_count)
+	if count <= 0:
+		return
+	var turret_shot := int(projectile.owner) == ProjectileOwner.TURRET
+	var upgraded_player_shot := not turret_shot and int(projectile.get("damage", 1)) > 1
+	var core_color := PURPLE_SOFT if turret_shot else (ORANGE_HOT if upgraded_player_shot else LIME)
+	var under_color := PURPLE if turret_shot else (ORANGE_HOT.darkened(0.28) if upgraded_player_shot else LIME_DARK)
+	var opacity := 0.5 if turret_shot else 1.0
+	var head_radius := 7.0 if upgraded_player_shot else 5.0
+	var width_scale := 0.72 if turret_shot else 1.0
+	for point_index in count:
+		var progress := float(point_index + 1) / float(count)
+		var from := _projectile_trail_visual_point(index, projectile, point_index) + offset
+		var to := _projectile_trail_visual_point(index, projectile, point_index + 1) + offset
+		var width := lerpf(0.9, head_radius * 1.15, progress) * width_scale
+		var alpha := lerpf(0.05, 0.46, pow(progress, 1.35)) * opacity
+		draw_line(from, to, Color(under_color.r, under_color.g, under_color.b, alpha * 0.55), width + 2.0 * width_scale, true)
+		draw_line(from, to, Color(core_color.r, core_color.g, core_color.b, alpha), width, true)
+		draw_circle(from, width * 0.5, Color(core_color.r, core_color.g, core_color.b, alpha))
+	if count < 2:
+		return
+	var bead_index := (count - 1) / 2
+	var bead_progress := float(bead_index) / float(count)
+	var bead_point := _projectile_trail_visual_point(index, projectile, bead_index)
+	var bead_next := Vector2(projectile.pos) if bead_index + 1 >= count else _projectile_trail_point(index, projectile, bead_index + 1)
+	var bead_tangent := bead_next - _projectile_trail_point(index, projectile, bead_index)
+	if bead_tangent.length_squared() <= 0.0001:
+		bead_tangent = Vector2(projectile.vel)
+	var bead_normal := Vector2(-bead_tangent.y, bead_tangent.x).normalized()
+	var side := -1.0 if sin(float(projectile.trail_seed) * 2.31) < 0.0 else 1.0
+	var bead_motion := 0.0 if bool(saved.get("reduced_motion", false)) else sin(run_time * 11.0 + float(projectile.trail_seed)) * 0.8
+	var bead_offset := bead_normal * side * (3.4 + bead_motion) * width_scale
+	var bead_alpha := lerpf(0.08, 0.32, bead_progress) * opacity
+	draw_circle(bead_point + bead_offset + offset, lerpf(0.65, 1.35, bead_progress) * width_scale, Color(core_color.r, core_color.g, core_color.b, bead_alpha))
 
 
 func _draw_boss_ring_attack(germ: Dictionary, offset: Vector2) -> void:
