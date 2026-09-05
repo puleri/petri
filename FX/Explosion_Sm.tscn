@@ -1,0 +1,45 @@
+[gd_scene format=3 uid="uid://cp306c3voaqlb"]
+
+[ext_resource type="Texture2D" uid="uid://djovl7ycbb2ol" path="res://FX/ParticleMask-Soft.png" id="1_6dnp3"]
+
+[sub_resource type="Curve" id="Curve_74vvn"]
+_limits = [0.0, 500.0, 0.0, 1.0]
+_data = [Vector2(0, 1), 0.0, 0.0, 0, 0, Vector2(1, 498.56134), 0.0, 0.0, 0, 0]
+point_count = 2
+
+[sub_resource type="CurveTexture" id="CurveTexture_82ikx"]
+curve = SubResource("Curve_74vvn")
+
+[sub_resource type="Curve" id="Curve_kfv68"]
+_data = [Vector2(0.4921875, 1), 0.0, 0.0, 0, 0, Vector2(1, 0), -0.023285752, 0.0, 0, 0]
+point_count = 2
+
+[sub_resource type="CurveTexture" id="CurveTexture_e75ep"]
+curve = SubResource("Curve_kfv68")
+
+[sub_resource type="ParticleProcessMaterial" id="ParticleProcessMaterial_vpxbb"]
+lifetime_randomness = 0.3
+particle_flag_disable_z = true
+spread = 180.0
+radial_velocity_min = 59.999977
+radial_velocity_max = 199.99997
+gravity = Vector3(0, 0, 0)
+damping_min = 1979.2571
+damping_max = 2020.743
+damping_curve = SubResource("CurveTexture_82ikx")
+attractor_interaction_enabled = false
+scale_min = 0.049999997
+scale_max = 0.19999999
+scale_curve = SubResource("CurveTexture_e75ep")
+color = Color(0.706, 0.64, 1, 1)
+
+[node name="SmallExplosion" type="Node2D" unique_id=1947495762]
+
+[node name="GPUParticles2D" type="GPUParticles2D" parent="." unique_id=1053443957]
+amount = 4
+texture = ExtResource("1_6dnp3")
+lifetime = 0.4
+speed_scale = 1.1
+explosiveness = 1.0
+randomness = 0.5
+process_material = SubResource("ParticleProcessMaterial_vpxbb")

@@ -1,0 +1,158 @@
+[gd_scene format=3 uid="uid://buj3mp24r6tjs"]
+
+[ext_resource type="Script" uid="uid://77admwmkvbfa" path="res://assets/Specimen/Pewpoid/pewpoid.gd" id="1_5yxhm"]
+[ext_resource type="Texture2D" uid="uid://o6ih1c6af5dk" path="res://assets/Specimen/Pewpoid/Pewpoid-1.png" id="2_wucq1"]
+[ext_resource type="Texture2D" uid="uid://ddcecc6lo6q7k" path="res://assets/Specimen/Pewpoid/Pewpoid-2.png" id="3_k35l0"]
+[ext_resource type="Texture2D" uid="uid://b2x7mw6hc2l4l" path="res://assets/Specimen/Pewpoid/Pewpoid-3.png" id="4_326nk"]
+[ext_resource type="Texture2D" uid="uid://bohkcawema53b" path="res://assets/Specimen/Pewpoid/Pewpoid-4.png" id="5_yvi0b"]
+
+[sub_resource type="Animation" id="Animation_xxok8"]
+resource_name = "Jiggle"
+length = 0.3
+tracks/0/type = "value"
+tracks/0/imported = false
+tracks/0/enabled = true
+tracks/0/path = NodePath("Layer1:scale")
+tracks/0/interp = 1
+tracks/0/loop_wrap = true
+tracks/0/keys = {
+"times": PackedFloat32Array(0, 0.1, 0.3),
+"transitions": PackedFloat32Array(1, 1, 1),
+"update": 0,
+"values": [Vector2(1, 1), Vector2(1.1, 1.1), Vector2(1, 1)]
+}
+tracks/1/type = "value"
+tracks/1/imported = false
+tracks/1/enabled = true
+tracks/1/path = NodePath("Layer2:scale")
+tracks/1/interp = 1
+tracks/1/loop_wrap = true
+tracks/1/keys = {
+"times": PackedFloat32Array(0.033333335, 0.13339591, 0.3),
+"transitions": PackedFloat32Array(1, 1, 1),
+"update": 0,
+"values": [Vector2(1, 1), Vector2(1.1, 1.1), Vector2(1, 1)]
+}
+tracks/2/type = "value"
+tracks/2/imported = false
+tracks/2/enabled = true
+tracks/2/path = NodePath("Layer3:scale")
+tracks/2/interp = 1
+tracks/2/loop_wrap = true
+tracks/2/keys = {
+"times": PackedFloat32Array(0.06666667, 0.16666667, 0.3),
+"transitions": PackedFloat32Array(1, 1, 1),
+"update": 0,
+"values": [Vector2(1, 1), Vector2(1.1, 1.1), Vector2(1, 1)]
+}
+tracks/3/type = "value"
+tracks/3/imported = false
+tracks/3/enabled = true
+tracks/3/path = NodePath("Layer4:scale")
+tracks/3/interp = 1
+tracks/3/loop_wrap = true
+tracks/3/keys = {
+"times": PackedFloat32Array(0.09140851, 0.2, 0.3),
+"transitions": PackedFloat32Array(1, 1, 1),
+"update": 0,
+"values": [Vector2(1, 1), Vector2(1.1, 1.1), Vector2(1, 1)]
+}
+
+[sub_resource type="Animation" id="Animation_5gq5h"]
+length = 0.001
+tracks/0/type = "value"
+tracks/0/imported = false
+tracks/0/enabled = true
+tracks/0/path = NodePath("Layer1:scale")
+tracks/0/interp = 1
+tracks/0/loop_wrap = true
+tracks/0/keys = {
+"times": PackedFloat32Array(0),
+"transitions": PackedFloat32Array(1),
+"update": 0,
+"values": [Vector2(1, 1)]
+}
+tracks/1/type = "value"
+tracks/1/imported = false
+tracks/1/enabled = true
+tracks/1/path = NodePath("Layer2:scale")
+tracks/1/interp = 1
+tracks/1/loop_wrap = true
+tracks/1/keys = {
+"times": PackedFloat32Array(0),
+"transitions": PackedFloat32Array(1),
+"update": 0,
+"values": [Vector2(1, 1)]
+}
+tracks/2/type = "value"
+tracks/2/imported = false
+tracks/2/enabled = true
+tracks/2/path = NodePath("Layer3:scale")
+tracks/2/interp = 1
+tracks/2/loop_wrap = true
+tracks/2/keys = {
+"times": PackedFloat32Array(0),
+"transitions": PackedFloat32Array(1),
+"update": 0,
+"values": [Vector2(1, 1)]
+}
+tracks/3/type = "value"
+tracks/3/imported = false
+tracks/3/enabled = true
+tracks/3/path = NodePath("Layer4:scale")
+tracks/3/interp = 1
+tracks/3/loop_wrap = true
+tracks/3/keys = {
+"times": PackedFloat32Array(0),
+"transitions": PackedFloat32Array(1),
+"update": 0,
+"values": [Vector2(1, 1)]
+}
+
+[sub_resource type="AnimationLibrary" id="AnimationLibrary_g10cx"]
+_data = {
+&"Jiggle": SubResource("Animation_xxok8"),
+&"RESET": SubResource("Animation_5gq5h")
+}
+
+[node name="Node2D" type="Node2D" unique_id=258002338]
+script = ExtResource("1_5yxhm")
+
+[node name="Layer1" type="Sprite2D" parent="." unique_id=1004731884]
+texture = ExtResource("2_wucq1")
+
+[node name="Layer2" type="Sprite2D" parent="." unique_id=167424488]
+texture = ExtResource("3_k35l0")
+
+[node name="Layer3" type="Sprite2D" parent="." unique_id=307441450]
+texture = ExtResource("4_326nk")
+
+[node name="Layer4" type="Sprite2D" parent="." unique_id=1796935018]
+texture = ExtResource("5_yvi0b")
+
+[node name="AnimationPlayer" type="AnimationPlayer" parent="." unique_id=607384490]
+libraries/ = SubResource("AnimationLibrary_g10cx")
+
+[node name="Spawn1" type="Node2D" parent="." unique_id=293474144]
+visible = false
+position = Vector2(105, 66)
+
+[node name="Spawn2" type="Node2D" parent="." unique_id=565597558]
+visible = false
+position = Vector2(0, 123)
+
+[node name="Spawn3" type="Node2D" parent="." unique_id=1700871131]
+visible = false
+position = Vector2(-105, 66)
+
+[node name="Spawn4" type="Node2D" parent="." unique_id=2004379162]
+visible = false
+position = Vector2(-105, -66)
+
+[node name="Spawn5" type="Node2D" parent="." unique_id=436706266]
+visible = false
+position = Vector2(0, -123)
+
+[node name="Spawn6" type="Node2D" parent="." unique_id=802845852]
+visible = false
+position = Vector2(105, -66)
