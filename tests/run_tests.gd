@@ -19,6 +19,7 @@ func _run_suite() -> void:
 	_test_player_health()
 	_test_resources_and_scene()
 	_test_germ_assets_and_hit_reactions()
+	_test_pewpoid_boid_package()
 	_test_culture_wars_dialogue()
 	_test_timer_occlusion()
 	_test_item_specs()
@@ -26,6 +27,7 @@ func _run_suite() -> void:
 	_test_item_selection_and_overcharge()
 	_test_item_combat_effects()
 	_test_additional_item_combat_effects()
+	_test_more_item_combat_effects()
 	_test_boss_encounter_and_reward()
 	_test_second_boss_encounter_and_reward()
 	_test_third_boss_encounter_and_reward()
@@ -212,6 +214,8 @@ func _test_resources_and_scene() -> void:
 	_check(load("res://assets/figma/petri-logo.png") != null, "Figma PETRI logo loads")
 	var player_texture := load("res://assets/Specimen/P1/P1.png") as Texture2D
 	_check(player_texture != null and player_texture.get_size() == Vector2(226.0, 157.0), "soft-edged P1 player texture loads at its source size")
+	var package_resources_load := load("res://assets/Specimen/Pewpoid.tscn") != null and load("res://assets/Specimen/Boid.tscn") != null and load("res://FX/Projectile-Trail.tscn") != null and load("res://FX/Explosion_Sm.tscn") != null and load("res://FX/ParticleMask-Soft.png") != null
+	_check(package_resources_load, "Pewpoid, Boid, trail, explosion, and particle-mask resources load")
 	_check(load("res://scenes/main.tscn") != null, "main scene loads")
 	var script_constants: Dictionary = game.get_script().get_script_constant_map()
 	_check(Color(script_constants.get("GAME_BG")).is_equal_approx(Color("B2DBD5")) and Color(script_constants.get("PLAYSPACE_RING")).is_equal_approx(Color("D1EDE7")), "playspace backdrop uses the mockup mint palette")
@@ -229,16 +233,31 @@ func _test_germ_assets_and_hit_reactions() -> void:
 	var initial_node_count := _count_nodes(game)
 	var visual_cache: Array = game.get("germ_visual_textures")
 	var flash_masks: Array = game.get("germ_flash_masks")
-	var cache_complete := visual_cache.size() == GermData.GermTier.size() and flash_masks.size() == 4
+	var boid_cache: Array[Texture2D] = game.get("boid_visual_textures")
+	var particle_mask_cache: Texture2D = game.get("particle_mask_texture")
+	var cache_complete := visual_cache.size() == GermData.GermTier.size() and flash_masks.size() == GermData.GermTier.size() and boid_cache.size() == 4
 	var mipmaps_complete := cache_complete
 	if cache_complete:
-		for tier_layers in visual_cache:
-			cache_complete = cache_complete and Array(tier_layers).size() == 4
-			for texture in Array(tier_layers):
+		for tier in visual_cache.size():
+			var tier_layers: Array = visual_cache[tier]
+			var tier_masks: Array = flash_masks[tier]
+			cache_complete = cache_complete and tier_layers.size() == 4 and tier_masks.size() == 4
+			for texture in tier_layers:
 				var cached_texture := texture as Texture2D
 				mipmaps_complete = mipmaps_complete and cached_texture != null and cached_texture.get_image().has_mipmaps()
-	_check(cache_complete, "all seven germ tiers cache four layered Meeboid textures")
-	_check(mipmaps_complete, "generated germ textures include mipmaps for small tiers")
+			for mask in tier_masks:
+				var cached_mask := mask as Texture2D
+				mipmaps_complete = mipmaps_complete and cached_mask != null and cached_mask.get_image().has_mipmaps()
+		for texture in boid_cache:
+			mipmaps_complete = mipmaps_complete and texture != null and texture.get_image().has_mipmaps()
+		mipmaps_complete = mipmaps_complete and particle_mask_cache != null and particle_mask_cache.get_image().has_mipmaps()
+	_check(cache_complete, "all germ tiers and Boids cache four visual layers and tier-correct flash masks")
+	_check(mipmaps_complete, "generated germ, Pewpoid, Boid, and particle-mask textures include mipmaps")
+	var pewpoid_source := load("res://assets/Specimen/Pewpoid/Pewpoid-4.png") as Texture2D
+	var source_pixel := pewpoid_source.get_image().get_pixel(120, 120)
+	var cached_pixel := (Array(visual_cache[GermData.GermTier.BOSS_2])[3] as Texture2D).get_image().get_pixel(120, 120)
+	_check(cached_pixel.is_equal_approx(source_pixel), "second boss preserves Pewpoid's authored mint and cyan colors")
+	_check(is_equal_approx(float(game.call("_germ_asset_radius", GermData.GermTier.BOSS_2)), 110.0) and is_equal_approx(float(game.call("_germ_asset_radius", GermData.GermTier.BOSS_3)), 119.0), "Pewpoid and Meeboid use separate source-art radii")
 	_check(Color(game.call("_germ_palette_color", GermData.GermTier.LARGE)).is_equal_approx(Color("55DDE0")) and Color(game.call("_germ_palette_color", GermData.GermTier.SMALL)).is_equal_approx(Color("55DDE0")), "large and small germs use the cyan body palette")
 	_check(Color(game.call("_germ_palette_color", GermData.GermTier.MEDIUM)).is_equal_approx(Color("EFCEFD")) and Color(game.call("_germ_palette_color", GermData.GermTier.ELITE)).is_equal_approx(Color("FF9E73")), "medium and elite germs use lavender and orange palettes")
 	_check(Color(game.call("_germ_palette_color", GermData.GermTier.BOSS_3)).is_equal_approx(Color("1B0D26")), "third boss uses the midnight-purple body palette")
@@ -280,6 +299,173 @@ func _test_germ_assets_and_hit_reactions() -> void:
 	game.call("_damage_germ", elite_index, 1)
 	_check(is_equal_approx(float(germs[elite_index].hit_reaction_left), 0.3), "future hits animate after Reduced Motion is disabled")
 	_check(_count_nodes(game) == initial_node_count and germs.size() == 37, "layered hit reactions add no nodes or germ pool slots")
+	_free_game(game)
+
+
+func _test_pewpoid_boid_package() -> void:
+	var game := _new_game()
+	game.call("_start_run")
+	_clear_combat(game)
+	var initial_node_count := _count_nodes(game)
+	var center := Vector2(game.get("arena_center"))
+	var script_constants: Dictionary = game.get_script().get_script_constant_map()
+	var trail_storage: PackedVector2Array = game.get("boid_trail_points")
+	_check(GameMath.PEWPOID_VOLLEY_COUNT == 6 and Array(script_constants.get("PEWPOID_EMITTER_OFFSETS")).size() == 6, "Pewpoid exposes six authored emitter positions")
+	_check(int(script_constants.get("BOID_TRAIL_CAPACITY")) == 6 and trail_storage.size() == GameMath.MAX_FRAGMENTS * 6, "Boid trails use one fixed six-point buffer per debris slot")
+
+	game.call("_spawn_germ", GermData.GermTier.BOSS_2, center)
+	var boss: Dictionary = Array(game.get("germs"))[GameMath.BOSS_GERM_INDEX]
+	boss.phase = 1.0
+	_check(is_equal_approx(float(game.call("_germ_visual_rotation", boss)), 0.5), "Pewpoid rotates at the authored half-radian speed")
+	game.call("_spawn_boss_volley", center, 0.0, GermData.GermTier.BOSS_2)
+	var boid_indices := _active_debris_indices(game, 2)
+	var volley_matches_emitters := boid_indices.size() == GameMath.PEWPOID_VOLLEY_COUNT
+	for shot in boid_indices.size():
+		var fragment: Dictionary = Array(game.get("debris"))[boid_indices[shot]]
+		var expected_offset := Vector2(game.call("_pewpoid_emitter_offset", shot, 0.0, 100.0))
+		volley_matches_emitters = volley_matches_emitters and Vector2(fragment.pos).is_equal_approx(center + expected_offset)
+		volley_matches_emitters = volley_matches_emitters and Vector2(fragment.vel).normalized().is_equal_approx(expected_offset.normalized())
+		volley_matches_emitters = volley_matches_emitters and is_equal_approx(float(fragment.radius), 27.5) and is_zero_approx(float(fragment.spin)) and int(fragment.bounces) == 1
+		volley_matches_emitters = volley_matches_emitters and is_equal_approx(float(fragment.life), GameMath.BOSS_VOLLEY_LIFETIME) and is_equal_approx(Vector2(fragment.vel).length(), GameMath.BOSS_VOLLEY_SPEED)
+	_check(volley_matches_emitters, "second boss emits six large Boids from the rotating Pewpoid ports")
+
+	var trail_index := boid_indices[0]
+	var trail_fragment: Dictionary = Array(game.get("debris"))[trail_index]
+	var spawn_point := Vector2(game.call("_boid_trail_point", trail_index, trail_fragment, 0))
+	var trail_initialized := int(trail_fragment.trail_count) == 1 and spawn_point.is_equal_approx(Vector2(trail_fragment.pos))
+	game.call("_update_debris", 0.1)
+	trail_fragment = Array(game.get("debris"))[trail_index]
+	var trail_sampled := int(trail_fragment.trail_count) >= 4 and is_equal_approx(float(trail_fragment.phase), 0.1)
+	for point_index in range(1, int(trail_fragment.trail_count)):
+		var previous := Vector2(game.call("_boid_trail_point", trail_index, trail_fragment, point_index - 1))
+		var current := Vector2(game.call("_boid_trail_point", trail_index, trail_fragment, point_index))
+		trail_sampled = trail_sampled and absf(previous.distance_to(current) - 7.0) <= 0.01
+	_check(trail_initialized and trail_sampled, "Boid trail sampling is distance-based and advances its pooled idle phase")
+	trail_fragment.phase = 0.5
+	var animated_scale := float(game.call("_boid_idle_layer_scale", trail_fragment, 0))
+	var saved_data: Dictionary = game.get("saved")
+	saved_data.reduced_motion = true
+	var reduced_scale := float(game.call("_boid_idle_layer_scale", trail_fragment, 0))
+	var reduced_wobble := float(game.call("_boid_trail_wobble", trail_fragment, 2, 0.5))
+	_check(is_equal_approx(animated_scale, 1.1) and is_equal_approx(reduced_scale, 1.0) and is_zero_approx(reduced_wobble), "Reduced Motion disables Boid pulse and trail warble")
+	saved_data.reduced_motion = false
+
+	game.call("_start_run")
+	_clear_combat(game)
+	_set_test_boid(game, 0, center + Vector2.RIGHT * 100.0)
+	game.call("_spawn_projectile", center + Vector2.RIGHT * 100.0, Vector2.RIGHT, 0.0, 1.0, 0, 0)
+	game.call("_resolve_projectile_hits")
+	var shot_effect: Dictionary = Array(game.get("effect_flashes"))[0]
+	_check(not bool(Array(game.get("debris"))[0].active) and int(game.get("score")) == 10 and bool(shot_effect.active) and int(shot_effect.style) == 1 and is_equal_approx(float(shot_effect.duration), 0.4), "player shots destroy Boids for debris score and spawn pooled cosmetic explosions")
+
+	game.call("_start_run")
+	_clear_combat(game)
+	game.set("beam_direction", Vector2.RIGHT)
+	_set_test_boid(game, 0, center + Vector2.RIGHT * 100.0)
+	game.call("_damage_beam", 1)
+	var beam_destroyed := not bool(Array(game.get("debris"))[0].active)
+	game.call("_start_run")
+	_clear_combat(game)
+	_set_test_boid(game, 0, center + Vector2.RIGHT * 40.0)
+	game.call("_damage_area", center, 13.0, 1)
+	var aoe_destroyed := not bool(Array(game.get("debris"))[0].active)
+	game.call("_start_run")
+	_clear_combat(game)
+	Array(game.get("boon_levels"))[BoonData.BoonType.GOO_TRAIL_BOOST] = 1
+	game.call("_spawn_goo_patch", center)
+	_set_test_boid(game, 0, center + Vector2.RIGHT * 50.0)
+	game.call("_update_goo_patches", 0.0)
+	var goo_destroyed := not bool(Array(game.get("debris"))[0].active)
+	game.call("_start_run")
+	_clear_combat(game)
+	Array(game.get("item_levels"))[ItemData.ItemType.SPINNING_HITTER] = 1
+	game.set("hitter_angle", 0.0)
+	_set_test_boid(game, 0, center + Vector2.RIGHT * 88.0)
+	game.call("_update_spinning_hitters", 0.0)
+	var hitter_destroyed := not bool(Array(game.get("debris"))[0].active)
+	_check(beam_destroyed and aoe_destroyed and goo_destroyed and hitter_destroyed, "beam, AOE, goo, and spinning hitters respect the larger Boid radius")
+
+	game.call("_start_run")
+	_clear_combat(game)
+	Array(game.get("boon_levels"))[BoonData.BoonType.FREEZE_AOE_SHOCK] = 1
+	_set_test_boid(game, 0, center + Vector2.RIGHT * 200.0)
+	game.call("_activate_freeze_shock")
+	var freeze_reaches_edge := float(Array(game.get("debris"))[0].freeze_left) > 0.0
+	game.call("_start_run")
+	_clear_combat(game)
+	Array(game.get("item_levels"))[ItemData.ItemType.INHIBITOR_FIELD] = 1
+	_set_test_boid(game, 0, center + Vector2.RIGHT * 130.0, Vector2.RIGHT * 100.0)
+	var before_inhibitor := Vector2(Array(game.get("debris"))[0].pos)
+	game.call("_update_debris", 0.1)
+	var inhibitor_reaches_edge := is_equal_approx(Vector2(Array(game.get("debris"))[0].pos).x - before_inhibitor.x, 8.0)
+	game.call("_start_run")
+	_clear_combat(game)
+	_set_test_boid(game, 0, center + Vector2.RIGHT * 40.0)
+	var before_repel := Vector2(Array(game.get("debris"))[0].pos)
+	game.call("_repel_hostiles", 20.0)
+	var repel_reaches_edge := Vector2(Array(game.get("debris"))[0].pos).x > before_repel.x
+	_check(freeze_reaches_edge and inhibitor_reaches_edge and repel_reaches_edge, "freeze, inhibitor, and hostile repulsion include the Boid collision radius")
+
+	var protected_contacts := true
+	for protection in ["spawn_protection_left", "damage_protection_left", "dash_left", "invincibility_left"]:
+		game.call("_start_run")
+		_clear_combat(game)
+		game.set("spawn_protection_left", 0.0)
+		game.set("damage_protection_left", 0.0)
+		game.set("dash_left", 0.0)
+		game.set("invincibility_left", 0.0)
+		game.set(protection, 1.0)
+		_set_test_boid(game, 0, Vector2(game.get("player_pos")))
+		game.call("_resolve_hostile_hits")
+		protected_contacts = protected_contacts and int(game.get("player_health")) == 3 and not bool(Array(game.get("debris"))[0].active)
+	game.call("_start_run")
+	_clear_combat(game)
+	game.set("spawn_protection_left", 0.0)
+	Array(game.get("item_levels"))[ItemData.ItemType.ANTIBODY_SHELL] = 1
+	_set_test_boid(game, 0, Vector2(game.get("player_pos")))
+	game.call("_resolve_hostile_hits")
+	var shell_consumes := int(game.get("player_health")) == 3 and float(game.get("antibody_cooldown")) > 0.0 and not bool(Array(game.get("debris"))[0].active)
+	game.call("_start_run")
+	_clear_combat(game)
+	game.set("spawn_protection_left", 0.0)
+	_set_test_boid(game, 0, Vector2(game.get("player_pos")))
+	game.call("_resolve_hostile_hits")
+	var unprotected_hit := int(game.get("player_health")) == 2 and not bool(Array(game.get("debris"))[0].active)
+	_check(protected_contacts and shell_consumes and unprotected_hit, "every player contact consumes a Boid while protections still prevent damage")
+
+	game.call("_start_run")
+	_clear_combat(game)
+	_set_test_boid(game, 0, center, Vector2.ZERO, 0, 0.01)
+	game.call("_update_debris", 0.02)
+	var timeout_is_cosmetic := not bool(Array(game.get("debris"))[0].active) and int(game.get("score")) == 0 and bool(Array(game.get("effect_flashes"))[0].active)
+	game.call("_start_run")
+	_clear_combat(game)
+	var arena_radius := float(game.get("arena_radius"))
+	_set_test_boid(game, 0, center + Vector2.RIGHT * (arena_radius - 28.5), Vector2.RIGHT * GameMath.BOSS_VOLLEY_SPEED, 1)
+	game.call("_update_debris", 0.1)
+	var bounced_fragment: Dictionary = Array(game.get("debris"))[0]
+	var bounced_inside := bool(bounced_fragment.active) and int(bounced_fragment.bounces) == 0 and Vector2(bounced_fragment.pos).distance_to(center) <= arena_radius - 27.5 + 0.001
+	bounced_fragment.pos = center + Vector2.RIGHT * (arena_radius - 28.5)
+	bounced_fragment.vel = Vector2.RIGHT * GameMath.BOSS_VOLLEY_SPEED
+	game.call("_update_debris", 0.1)
+	var final_fragment: Dictionary = Array(game.get("debris"))[0]
+	var final_wall_explodes := not bool(final_fragment.active) and int(final_fragment.trail_count) == 0 and int(game.get("score")) == 0 and bool(Array(game.get("effect_flashes"))[0].active)
+	_check(timeout_is_cosmetic and bounced_inside and final_wall_explodes, "Boids bounce once, stay inside the membrane, clear trails, and explode without score on expiry")
+
+	game.call("_start_run")
+	_clear_combat(game)
+	_set_test_boid(game, 0, center)
+	game.call("_clear_boss_volley_debris")
+	var silent_cleanup := not bool(Array(game.get("debris"))[0].active) and int(Array(game.get("debris"))[0].trail_count) == 0 and not bool(Array(game.get("effect_flashes"))[0].active)
+	var effects: Array = game.get("effect_flashes")
+	for effect in effects:
+		effect.active = true
+	var full_effect_pool_drops_visual := not bool(game.call("_spawn_boid_explosion", center)) and effects.size() == 24
+	game.call("_start_run")
+	var reset_trail_storage: PackedVector2Array = game.get("boid_trail_points")
+	var reset_clears_visual_state := not bool(effects[0].active) and int(Array(game.get("debris"))[0].trail_count) == 0 and Vector2(reset_trail_storage[0]).is_zero_approx()
+	_check(silent_cleanup and full_effect_pool_drops_visual and reset_clears_visual_state, "boss cleanup and new runs silently clear Boid trail and pooled-effect state")
+	_check(_count_nodes(game) == initial_node_count, "Pewpoid, Boid trails, and explosions add no runtime nodes")
 	_free_game(game)
 
 
@@ -454,7 +640,7 @@ func _test_timer_occlusion() -> void:
 
 
 func _test_item_specs() -> void:
-	_check(ItemData.ItemType.size() == 12 and ItemData.MAX_LEVEL == 3, "twelve item types with level-three cap")
+	_check(ItemData.ItemType.size() == 20 and ItemData.MAX_LEVEL == 3, "twenty item types with level-three cap")
 	_check(ItemData.hitter_count(1) == 1 and ItemData.hitter_count(4) == 4, "spinning hitter count curve")
 	_check(is_equal_approx(ItemData.aoe_radius(3), 170.0) and is_equal_approx(ItemData.aoe_interval(4), 2.75), "AOE radius and interval curve")
 	_check(is_equal_approx(ItemData.turret_interval(3), 0.8) and is_equal_approx(ItemData.turret_interval(4), 0.4), "turret overcharge fire rate")
@@ -467,6 +653,11 @@ func _test_item_specs() -> void:
 	_check(is_equal_approx(ItemData.antibody_recharge(3), 16.0) and is_equal_approx(ItemData.antibody_pulse_radius(4), 150.0), "antibody shell curve")
 	_check(is_equal_approx(ItemData.cleanup_radius(3), 75.0) and ItemData.cleanup_damage(4) == 2, "catalytic cleanup curve")
 	_check(is_equal_approx(ItemData.seeking_range(3), 320.0) and is_equal_approx(ItemData.seeking_turn_speed(4), 5.0), "seeking enzyme curve")
+	_check(is_equal_approx(ItemData.projectile_radius(3), 11.0) and ItemData.concentrated_hit_interval(4) == 2, "broad spectrum and concentrated dose curves")
+	_check(is_equal_approx(ItemData.lysis_radius(3), 70.0) and ItemData.lysis_damage(4) == 2, "lysis cascade curve")
+	_check(is_equal_approx(ItemData.osmotic_age_threshold(1), 0.55) and ItemData.osmotic_bonus(4, 0.2) == 2, "osmotic rounds age and damage curve")
+	_check(is_equal_approx(ItemData.split_freeze_duration(3), 0.85) and ItemData.fever_radius(4) == INF, "split shock and fever response curves")
+	_check(is_equal_approx(ItemData.repulsor_distance(4), 60.0) and ItemData.delayed_release_interval(1) == 6, "repulsor dose and delayed release curves")
 
 
 func _test_elite_and_pickup_flow() -> void:
@@ -683,6 +874,103 @@ func _test_additional_item_combat_effects() -> void:
 	_free_game(game)
 
 
+func _test_more_item_combat_effects() -> void:
+	var game := _new_game()
+	game.call("_start_run")
+	_clear_combat(game)
+	var levels: Array = game.get("item_levels")
+	var center := Vector2(game.get("arena_center"))
+
+	levels[ItemData.ItemType.BROAD_SPECTRUM] = 3
+	game.call("_spawn_germ", GermData.GermTier.SMALL, center + Vector2.RIGHT * 28.0)
+	game.call("_spawn_projectile", center, Vector2.RIGHT, 0.0, 2.0, 0, 0)
+	game.call("_resolve_projectile_hits")
+	_check(not bool(Array(game.get("germs"))[0].active) and is_equal_approx(float(Array(game.get("pellets"))[0].radius), 11.0), "broad spectrum enlarges player projectiles and their collision radius")
+
+	game.call("_start_run")
+	_clear_combat(game)
+	levels = game.get("item_levels")
+	levels[ItemData.ItemType.CONCENTRATED_DOSE] = 1
+	var target := center + Vector2.RIGHT * 80.0
+	game.call("_spawn_germ", GermData.GermTier.ELITE, target)
+	for hit in 5:
+		game.call("_spawn_projectile", target, Vector2.RIGHT, 0.0, 2.0, 0, 0)
+		game.call("_resolve_projectile_hits")
+	var elite: Dictionary = Array(game.get("germs"))[GameMath.ELITE_GERM_INDEX]
+	_check(int(elite.hp) == 12 and int(elite.dose_hits) == 0, "concentrated dose adds damage on every fifth hit to one target")
+
+	game.call("_start_run")
+	_clear_combat(game)
+	levels = game.get("item_levels")
+	levels[ItemData.ItemType.LYSIS_CASCADE] = 1
+	game.call("_spawn_germ", GermData.GermTier.SMALL, center)
+	game.call("_spawn_germ", GermData.GermTier.SMALL, center + Vector2.RIGHT * 30.0)
+	game.call("_spawn_projectile", center, Vector2.RIGHT, 0.0, 2.0, 0, 0)
+	game.call("_resolve_projectile_hits")
+	_check(not bool(Array(game.get("germs"))[0].active) and not bool(Array(game.get("germs"))[1].active), "lysis cascade turns a direct projectile kill into a nearby damage pulse")
+
+	game.call("_start_run")
+	_clear_combat(game)
+	levels = game.get("item_levels")
+	levels[ItemData.ItemType.OSMOTIC_ROUNDS] = 1
+	game.call("_spawn_germ", GermData.GermTier.ELITE, target)
+	game.call("_spawn_projectile", target, Vector2.RIGHT, 0.0, 2.0, 0, 0)
+	Array(game.get("pellets"))[0].age = 0.6
+	game.call("_resolve_projectile_hits")
+	_check(int(Array(game.get("germs"))[GameMath.ELITE_GERM_INDEX].hp) == 16, "osmotic rounds reward aged projectiles with bonus damage")
+
+	game.call("_start_run")
+	_clear_combat(game)
+	levels = game.get("item_levels")
+	levels[ItemData.ItemType.SPLIT_SHOCK] = 1
+	game.call("_spawn_germ", GermData.GermTier.MEDIUM, center)
+	game.call("_damage_germ", 0, 2)
+	var frozen_children := 0
+	for germ in Array(game.get("germs")):
+		if bool(germ.active) and int(germ.tier) == GermData.GermTier.SMALL and is_equal_approx(float(germ.freeze_left), 0.35):
+			frozen_children += 1
+	_check(frozen_children == 2, "split shock freezes both children created by a defeated germ")
+
+	game.call("_start_run")
+	_clear_combat(game)
+	levels = game.get("item_levels")
+	levels[ItemData.ItemType.FEVER_RESPONSE] = 1
+	game.set("spawn_protection_left", 0.0)
+	game.call("_spawn_germ", GermData.GermTier.ELITE, center + Vector2.RIGHT * 100.0)
+	Array(game.get("debris"))[0] = {"active": true, "pos": center + Vector2.UP * 100.0, "vel": Vector2.ZERO, "life": 10.0, "angle": 0.0, "spin": 0.0, "hitter_cooldown": 0.0}
+	game.call("_damage_player", "test")
+	_check(int(game.get("player_health")) == 2 and int(Array(game.get("germs"))[GameMath.ELITE_GERM_INDEX].hp) == 17 and not bool(Array(game.get("debris"))[0].active), "fever response retaliates against nearby non-boss threats after health loss")
+
+	game.call("_start_run")
+	_clear_combat(game)
+	levels = game.get("item_levels")
+	levels[ItemData.ItemType.REPULSOR_DOSE] = 1
+	game.call("_spawn_germ", GermData.GermTier.LARGE, target)
+	var repulsor_start := Vector2(Array(game.get("germs"))[0].pos)
+	game.call("_spawn_projectile", target, Vector2.RIGHT, 100.0, 2.0, 0, 0)
+	game.call("_resolve_projectile_hits")
+	_check(is_equal_approx(Vector2(Array(game.get("germs"))[0].pos).x - repulsor_start.x, 18.0), "repulsor dose pushes surviving germs along the projectile path")
+
+	game.call("_start_run")
+	_clear_combat(game)
+	levels = game.get("item_levels")
+	levels[ItemData.ItemType.DELAYED_RELEASE] = 1
+	for volley in 6:
+		game.call("_fire_pellet")
+	var queued_echoes := 0
+	var initial_projectiles := 0
+	for echo in Array(game.get("delayed_volleys")):
+		if bool(echo.active): queued_echoes += 1
+	for projectile in Array(game.get("pellets")):
+		if bool(projectile.active): initial_projectiles += 1
+	game.call("_update_delayed_volleys", 0.16)
+	var echoed_projectiles := 0
+	for projectile in Array(game.get("pellets")):
+		if bool(projectile.active): echoed_projectiles += 1
+	_check(queued_echoes == 1 and initial_projectiles == 6 and echoed_projectiles == 7, "delayed release echoes every sixth volley from its captured aim")
+	_free_game(game)
+
+
 func _test_boss_encounter_and_reward() -> void:
 	var game := _new_game()
 	game.call("_start_run")
@@ -876,31 +1164,31 @@ func _test_second_boss_encounter_and_reward() -> void:
 	saved_data.reduced_motion = true
 	game.call("_update_germs", 0.5)
 	boss = boss_pool[GameMath.BOSS_GERM_INDEX]
-	_check(int(boss.dash_phase) == 3 and is_equal_approx(float(boss.dash_timer), 10.0) and _active_debris_indices(game, 1).is_empty(), "dash timer pauses during the reduced-motion volley warning")
+	_check(int(boss.dash_phase) == 3 and is_equal_approx(float(boss.dash_timer), 10.0) and _active_debris_indices(game, 2).is_empty(), "dash timer pauses during the reduced-motion Pewpoid volley warning")
 	game.call("_update_germs", 0.41)
 	boss = boss_pool[GameMath.BOSS_GERM_INDEX]
-	var volley_indices := _active_debris_indices(game, 1)
-	var volley_specs_ok := volley_indices.size() == GameMath.BOSS_VOLLEY_COUNT
+	var volley_indices := _active_debris_indices(game, 2)
+	var volley_specs_ok := volley_indices.size() == GameMath.PEWPOID_VOLLEY_COUNT
 	for index in volley_indices:
 		var fragment: Dictionary = Array(game.get("debris"))[index]
-		volley_specs_ok = volley_specs_ok and int(fragment.bounces) == 1 and is_equal_approx(float(fragment.life), GameMath.BOSS_VOLLEY_LIFETIME) and is_equal_approx(Vector2(fragment.vel).length(), GameMath.BOSS_VOLLEY_SPEED)
-	_check(int(boss.dash_phase) == 0 and is_equal_approx(float(boss.volley_timer), GameMath.BOSS_VOLLEY_COOLDOWN) and volley_specs_ok and not is_nan(volley_rotation), "volley emits ten tagged one-bounce debris projectiles")
+		volley_specs_ok = volley_specs_ok and int(fragment.bounces) == 1 and is_equal_approx(float(fragment.life), GameMath.BOSS_VOLLEY_LIFETIME) and is_equal_approx(Vector2(fragment.vel).length(), GameMath.BOSS_VOLLEY_SPEED) and is_equal_approx(float(fragment.radius), 27.5) and int(fragment.trail_count) == 1
+	_check(int(boss.dash_phase) == 0 and is_equal_approx(float(boss.volley_timer), GameMath.BOSS_VOLLEY_COOLDOWN) and volley_specs_ok and not is_nan(volley_rotation), "Pewpoid volley emits six tagged one-bounce Boid projectiles")
 
 	var arena_radius := float(game.get("arena_radius"))
 	var bouncing_index := volley_indices[0]
-	Array(game.get("debris"))[bouncing_index].pos = center + Vector2.RIGHT * (arena_radius - 11.0)
+	Array(game.get("debris"))[bouncing_index].pos = center + Vector2.RIGHT * (arena_radius - 28.5)
 	Array(game.get("debris"))[bouncing_index].vel = Vector2.RIGHT * GameMath.BOSS_VOLLEY_SPEED
 	game.call("_update_debris", 0.1)
-	_check(bool(Array(game.get("debris"))[bouncing_index].active) and int(Array(game.get("debris"))[bouncing_index].bounces) == 0, "volley debris consumes its single membrane bounce")
-	Array(game.get("debris"))[bouncing_index].pos = center + Vector2.RIGHT * (arena_radius - 11.0)
+	_check(bool(Array(game.get("debris"))[bouncing_index].active) and int(Array(game.get("debris"))[bouncing_index].bounces) == 0, "Boid volley consumes its single membrane bounce")
+	Array(game.get("debris"))[bouncing_index].pos = center + Vector2.RIGHT * (arena_radius - 28.5)
 	Array(game.get("debris"))[bouncing_index].vel = Vector2.RIGHT * GameMath.BOSS_VOLLEY_SPEED
 	game.call("_update_debris", 0.1)
-	_check(not bool(Array(game.get("debris"))[bouncing_index].active), "volley debris expires on its next membrane impact")
-	var expiring_index := _active_debris_indices(game, 1)[0]
+	_check(not bool(Array(game.get("debris"))[bouncing_index].active), "Boid volley expires on its next membrane impact")
+	var expiring_index := _active_debris_indices(game, 2)[0]
 	Array(game.get("debris"))[expiring_index].life = 0.01
 	game.call("_update_debris", 0.02)
-	_check(not bool(Array(game.get("debris"))[expiring_index].active), "volley debris expires after six-second lifetime")
-	var destructible_index := _active_debris_indices(game, 1)[0]
+	_check(not bool(Array(game.get("debris"))[expiring_index].active), "Boid volley expires after six-second lifetime")
+	var destructible_index := _active_debris_indices(game, 2)[0]
 	var destructible_pos := Vector2(Array(game.get("debris"))[destructible_index].pos)
 	boss_pool[GameMath.BOSS_GERM_INDEX].pos = center + Vector2.LEFT * 190.0
 	game.set("score", 0)
@@ -909,7 +1197,7 @@ func _test_second_boss_encounter_and_reward() -> void:
 	_clear_projectiles(game)
 	game.call("_spawn_projectile", destructible_pos, Vector2.RIGHT, 0.0, 1.0, 0, 0)
 	game.call("_resolve_projectile_hits")
-	_check(not bool(Array(game.get("debris"))[destructible_index].active) and int(game.get("score")) == 10, "volley debris is destructible for the normal debris score")
+	_check(not bool(Array(game.get("debris"))[destructible_index].active) and int(game.get("score")) == 10, "Boid volley is destructible for the normal debris score")
 
 	var levels: Array = game.get("item_levels")
 	for i in levels.size(): levels[i] = ItemData.MAX_LEVEL
@@ -918,7 +1206,7 @@ func _test_second_boss_encounter_and_reward() -> void:
 	game.call("_damage_germ", GameMath.BOSS_GERM_INDEX, 1)
 	var volley_cleared := true
 	for fragment in Array(game.get("debris")):
-		if bool(fragment.active) and int(fragment.get("source", 0)) == 1: volley_cleared = false
+		if bool(fragment.active) and int(fragment.get("source", 0)) != 0: volley_cleared = false
 	var levels_cleared := true
 	for level in levels: levels_cleared = levels_cleared and int(level) == 0
 	_check(volley_cleared and levels_cleared and int(game.get("overcharge_item")) == -1, "second boss reward clears volley debris and resets abilities")
@@ -962,7 +1250,7 @@ func _test_second_boss_encounter_and_reward() -> void:
 	_clear_hostiles(chain_game)
 	chain_game.call("_spawn_germ", GermData.GermTier.BOSS_2, center)
 	chain_game.call("_spawn_boss_volley", center, 0.0)
-	var lethal_fragment := _active_debris_indices(chain_game, 1)[0]
+	var lethal_fragment := _active_debris_indices(chain_game, 2)[0]
 	chain_game.set("player_pos", Vector2(Array(chain_game.get("debris"))[lethal_fragment].pos))
 	chain_game.set("spawn_protection_left", 0.0)
 	chain_game.set("player_health", 1)
@@ -1284,6 +1572,7 @@ func _test_long_run_pool_stability() -> void:
 	var germ_pool: Array = game.get("germs")
 	var debris_pool: Array = game.get("debris")
 	var pellet_pool: Array = game.get("pellets")
+	var boid_trail_storage: PackedVector2Array = game.get("boid_trail_points")
 	var active_germs := 0
 	var active_debris := 0
 	for germ in germ_pool:
@@ -1291,9 +1580,9 @@ func _test_long_run_pool_stability() -> void:
 	for fragment in debris_pool:
 		if bool(fragment.active): active_debris += 1
 	_check(germ_pool.size() == 37 and active_germs <= 37, "ten-minute run respects regular, elite, and boss germ cap")
-	_check(debris_pool.size() == 80 and active_debris <= 80, "ten-minute run respects fragment pool cap")
+	_check(debris_pool.size() == 80 and active_debris <= 80 and boid_trail_storage.size() == 480, "ten-minute run respects fragment and fixed Boid-trail pool caps")
 	_check(pellet_pool.size() == 240, "projectile pool remains fixed")
-	_check(Array(game.get("turrets")).size() == 3 and Array(game.get("mines")).size() == 48 and Array(game.get("effect_flashes")).size() == 24, "item combat and effect pools remain fixed")
+	_check(Array(game.get("turrets")).size() == 3 and Array(game.get("mines")).size() == 48 and Array(game.get("effect_flashes")).size() == 24 and Array(game.get("delayed_volleys")).size() == 8, "item combat and effect pools remain fixed")
 	_check(Array(game.get("pickups")).size() == 4 and Array(game.get("item_warnings")).size() == 4, "pickup and item warning pools remain fixed")
 	_check(Array(game.get("boon_choices")).size() == 3 and Array(game.get("goo_patches")).size() == 64, "boon selection and goo pools remain fixed")
 	_check(_count_nodes(game) == initial_node_count, "ten-minute simulation leaks no nodes")
@@ -1334,6 +1623,31 @@ func _active_debris_indices(game: Node, source: int) -> Array[int]:
 	return indices
 
 
+func _set_test_boid(game: Node, index: int, position: Vector2, velocity: Vector2 = Vector2.ZERO, bounces: int = 1, life: float = GameMath.BOSS_VOLLEY_LIFETIME) -> void:
+	var trail_storage: PackedVector2Array = game.get("boid_trail_points")
+	trail_storage[index * 6] = position
+	game.set("boid_trail_points", trail_storage)
+	Array(game.get("debris"))[index] = {
+		"active": true,
+		"pos": position,
+		"vel": velocity,
+		"life": life,
+		"angle": velocity.angle(),
+		"spin": 0.0,
+		"phase": 0.0,
+		"radius": 27.5,
+		"hitter_cooldown": 0.0,
+		"goo_hit_cooldown": 0.0,
+		"freeze_left": 0.0,
+		"source": 2,
+		"bounces": bounces,
+		"trail_head": 0,
+		"trail_count": 1,
+		"trail_distance": 0.0,
+		"trail_seed": 0.0,
+	}
+
+
 func _active_goo_count(game: Node) -> int:
 	var count := 0
 	for patch in Array(game.get("goo_patches")):
@@ -1372,4 +1686,5 @@ func _clear_combat(game: Node) -> void:
 	for i in Array(game.get("mines")).size(): Array(game.get("mines"))[i].active = false
 	for i in Array(game.get("pickups")).size(): Array(game.get("pickups"))[i].active = false
 	for i in Array(game.get("item_warnings")).size(): Array(game.get("item_warnings"))[i].active = false
+	for i in Array(game.get("delayed_volleys")).size(): Array(game.get("delayed_volleys"))[i].active = false
 	Array(game.get("spawn_warnings")).clear()

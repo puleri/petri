@@ -18,7 +18,8 @@ enum DialogueSpeaker { NONE, GERM, PLAYER }
 enum DialogueCutscenePhase { NONE, ZOOM_IN, TALKING, ZOOM_OUT }
 enum BossEncounterPhase { INACTIVE, CLEANUP, WARNING, ACTIVE, BOON_SELECTION, COMPLETED }
 enum BossDashPhase { CHASE, WARNING, DASH, VOLLEY_WARNING, RING_WARNING, RING_ACTIVE }
-enum DebrisSource { REGULAR, BOSS_VOLLEY }
+enum DebrisSource { REGULAR, BOSS_VOLLEY, BOID }
+enum EffectStyle { RING, BOID_EXPLOSION }
 
 const BG := Color("#D7FFF8")
 const MINT := Color("#B2DBD5")
@@ -56,10 +57,23 @@ const PELLET_LIFETIME := 1.25
 const SPAWN_PROTECTION := 1.5
 const DEBRIS_LIFETIME := 12.0
 const PELLET_POOL_SIZE := 240
+const DEFAULT_DEBRIS_RADIUS := 8.0
+const DEFAULT_DEBRIS_BOUNDARY_RADIUS := 10.0
+const BOID_RADIUS := 27.5
+const BOID_ASSET_SCALE := 0.25
+const BOID_TRAIL_CAPACITY := 6
+const BOID_TRAIL_SAMPLE_DISTANCE := 7.0
+const BOID_TRAIL_WOBBLE := 1.2
+const BOID_TRAIL_PHASE_SPEED := 17.0
+const BOID_EXPLOSION_DURATION := 0.4
+const BOID_EXPLOSION_PARTICLES := 4
+const BOID_EXPLOSION_COLOR := Color(0.706, 0.64, 1.0, 1.0)
 const TURRET_POOL_SIZE := 3
 const MINE_POOL_SIZE := 48
 const PICKUP_POOL_SIZE := 4
 const EFFECT_FLASH_POOL_SIZE := 24
+const DELAYED_VOLLEY_POOL_SIZE := 8
+const DELAYED_VOLLEY_SECONDS := 0.15
 const ARENA_SCALE := 1.3225
 const PLAYSPACE_RING_RADIUS_MULTIPLIER := 1.44
 const DISH_INNER_SHADOW_WIDTH_MULTIPLIER := 0.2
@@ -100,11 +114,23 @@ const HUD_OCCLUDED_OPACITY := 0.15
 const WORLD_TEXT_OCCLUDED_OPACITY := 0.28
 const OPACITY_TRANSITION_SPEED := 4.5
 const GERM_ASSET_RADIUS := 119.0
+const PEWPOID_ASSET_RADIUS := 110.0
+const PEWPOID_ROTATION_SPEED := 0.5
+const PEWPOID_EMITTER_OFFSETS := [
+	Vector2(105.0, 66.0),
+	Vector2(0.0, 123.0),
+	Vector2(-105.0, 66.0),
+	Vector2(-105.0, -66.0),
+	Vector2(0.0, -123.0),
+	Vector2(105.0, -66.0),
+]
 const GERM_HIT_REACTION_SECONDS := 0.3
 const GERM_HIT_FLASH_PEAK_SECONDS := 0.05
 const GERM_HIT_FLASH_END_SECONDS := 0.25
 const GERM_HIT_LAYER_STARTS := [0.0, 0.033333335, 0.06666667, 0.09427313]
 const GERM_HIT_LAYER_PEAKS := [0.10000001, 0.13333334, 0.16550392, 0.19917288]
+const BOID_IDLE_LAYER_STARTS := [0.0, 0.06666667, 0.16666667, 0.26666668]
+const BOID_IDLE_LAYER_PEAKS := [0.5, 0.56666666, 0.6, 0.76666665]
 const GERM_VISUAL_DRAW_ORDER := [
 	GermData.GermTier.BOSS_3,
 	GermData.GermTier.BOSS_2,
@@ -128,6 +154,20 @@ var germ_layer_sources: Array[Texture2D] = [
 	preload("res://assets/Specimen/Meeboid/Meeboid-2.png"),
 	preload("res://assets/Specimen/Meeboid/Meeboid-1.png"),
 ]
+var pewpoid_layer_sources: Array[Texture2D] = [
+	preload("res://assets/Specimen/Pewpoid/Pewpoid-1.png"),
+	preload("res://assets/Specimen/Pewpoid/Pewpoid-2.png"),
+	preload("res://assets/Specimen/Pewpoid/Pewpoid-3.png"),
+	preload("res://assets/Specimen/Pewpoid/Pewpoid-4.png"),
+]
+var boid_layer_sources: Array[Texture2D] = [
+	preload("res://assets/Specimen/Boid/Boid-1.png"),
+	preload("res://assets/Specimen/Boid/Boid-2.png"),
+	preload("res://assets/Specimen/Boid/Boid-3.png"),
+	preload("res://assets/Specimen/Boid/Boid-4.png"),
+]
+var particle_mask_source: Texture2D = preload("res://FX/ParticleMask-Soft.png")
+var particle_mask_texture: Texture2D
 var germ_specs: Array[GermData] = [
 	preload("res://data/germ_large.tres"),
 	preload("res://data/germ_medium.tres"),
@@ -181,6 +221,7 @@ var mine_timer := INF
 var overcharge_item := -1
 var overcharge_left := 0.0
 var antibody_cooldown := 0.0
+var delayed_volley_counter := 0
 var boss_encounter_phase := BossEncounterPhase.INACTIVE
 var bosses_defeated := 0
 var active_boss_stage := -1
@@ -211,13 +252,18 @@ var pickups: Array[Dictionary] = []
 var turrets: Array[Dictionary] = []
 var mines: Array[Dictionary] = []
 var effect_flashes: Array[Dictionary] = []
+var delayed_volleys: Array[Dictionary] = []
 var item_levels: Array[int] = []
 var boon_levels: Array[int] = []
 var boon_choices: Array[Dictionary] = []
 var goo_patches: Array[Dictionary] = []
 var popups: Array[Dictionary] = []
 var germ_visual_textures: Array = []
-var germ_flash_masks: Array[Texture2D] = []
+var germ_flash_masks: Array = []
+var boid_visual_textures: Array[Texture2D] = []
+var boid_trail_points := PackedVector2Array()
+var debris_visual_sequence := 0
+var effect_visual_sequence := 0
 var dialogue_speaker := DialogueSpeaker.NONE
 var dialogue_germ_index := -1
 var dialogue_text := ""
@@ -255,6 +301,7 @@ func _ready() -> void:
 
 
 func _create_pools() -> void:
+	boid_trail_points.resize(GameMath.MAX_FRAGMENTS * BOID_TRAIL_CAPACITY)
 	for i in PELLET_POOL_SIZE:
 		pellets.append({
 			"active": false,
@@ -269,11 +316,13 @@ func _create_pools() -> void:
 			"hit_debris_high": 0,
 			"seek_target": -1,
 			"damage": 1,
+			"radius": 5.0,
+			"age": 0.0,
 		})
 	for i in GameMath.MAX_GERMS:
-		germs.append({"active": false, "tier": GermData.GermTier.LARGE, "pos": Vector2.ZERO, "vel": Vector2.ZERO, "move_speed": 0.0, "hp": 0, "phase": 0.0, "hitter_cooldown": 0.0, "goo_hit_cooldown": 0.0, "freeze_left": 0.0, "hit_reaction_left": 0.0, "topic_id": -1, "stance": -1, "dash_phase": BossDashPhase.CHASE, "dash_timer": INF, "dash_direction": Vector2.ZERO, "volley_timer": INF, "volley_rotation": 0.0, "ring_timer": INF, "ring_angle": 0.0, "ring_hit_player": false})
+		germs.append({"active": false, "tier": GermData.GermTier.LARGE, "pos": Vector2.ZERO, "vel": Vector2.ZERO, "move_speed": 0.0, "hp": 0, "phase": 0.0, "hitter_cooldown": 0.0, "goo_hit_cooldown": 0.0, "freeze_left": 0.0, "hit_reaction_left": 0.0, "dose_hits": 0, "topic_id": -1, "stance": -1, "dash_phase": BossDashPhase.CHASE, "dash_timer": INF, "dash_direction": Vector2.ZERO, "volley_timer": INF, "volley_rotation": 0.0, "ring_timer": INF, "ring_angle": 0.0, "ring_hit_player": false})
 	for i in GameMath.MAX_FRAGMENTS:
-		debris.append({"active": false, "pos": Vector2.ZERO, "vel": Vector2.ZERO, "life": 0.0, "angle": 0.0, "spin": 0.0, "hitter_cooldown": 0.0, "goo_hit_cooldown": 0.0, "freeze_left": 0.0, "source": DebrisSource.REGULAR, "bounces": -1})
+		debris.append({"active": false, "pos": Vector2.ZERO, "vel": Vector2.ZERO, "life": 0.0, "angle": 0.0, "spin": 0.0, "phase": 0.0, "radius": DEFAULT_DEBRIS_RADIUS, "hitter_cooldown": 0.0, "goo_hit_cooldown": 0.0, "freeze_left": 0.0, "source": DebrisSource.REGULAR, "bounces": -1, "trail_head": 0, "trail_count": 0, "trail_distance": 0.0, "trail_seed": 0.0})
 	for i in TURRET_POOL_SIZE:
 		turrets.append({"active": false, "pos": Vector2.ZERO, "cooldown": 0.0, "angle": 0.0})
 	for i in MINE_POOL_SIZE:
@@ -282,7 +331,9 @@ func _create_pools() -> void:
 		item_warnings.append({"active": false, "item_type": 0, "pos": Vector2.ZERO, "life": 0.0, "duration": ITEM_SPAWN_TELEGRAPH_SECONDS, "overcharge": false})
 		pickups.append({"active": false, "item_type": 0, "pos": Vector2.ZERO, "life": 0.0, "phase": 0.0, "overcharge": false})
 	for i in EFFECT_FLASH_POOL_SIZE:
-		effect_flashes.append({"active": false, "pos": Vector2.ZERO, "radius": 0.0, "life": 0.0, "duration": 0.0, "color": Color.WHITE})
+		effect_flashes.append({"active": false, "style": EffectStyle.RING, "pos": Vector2.ZERO, "radius": 0.0, "life": 0.0, "duration": 0.0, "color": Color.WHITE, "seed": 0.0})
+	for i in DELAYED_VOLLEY_POOL_SIZE:
+		delayed_volleys.append({"active": false, "delay": 0.0, "facing": 0.0})
 	for i in ItemData.ItemType.size():
 		item_levels.append(0)
 	for i in BoonData.BoonType.size():
@@ -296,17 +347,24 @@ func _create_pools() -> void:
 func _build_germ_visual_cache() -> void:
 	germ_visual_textures.clear()
 	germ_flash_masks.clear()
-	for source in germ_layer_sources:
-		germ_flash_masks.append(_make_germ_layer_texture(source, WHITE, true))
+	boid_visual_textures.clear()
 	for tier in GermData.GermTier.size():
 		var tier_layers: Array[Texture2D] = []
+		var tier_masks: Array[Texture2D] = []
 		var target := _germ_palette_color(tier)
-		for source in germ_layer_sources:
-			tier_layers.append(_make_germ_layer_texture(source, target, false))
+		var sources := pewpoid_layer_sources if tier == GermData.GermTier.BOSS_2 else germ_layer_sources
+		var preserve_color := tier == GermData.GermTier.BOSS_2
+		for source in sources:
+			tier_layers.append(_make_germ_layer_texture(source, target, false, preserve_color))
+			tier_masks.append(_make_germ_layer_texture(source, WHITE, true))
 		germ_visual_textures.append(tier_layers)
+		germ_flash_masks.append(tier_masks)
+	for source in boid_layer_sources:
+		boid_visual_textures.append(_make_germ_layer_texture(source, WHITE, false, true))
+	particle_mask_texture = _make_germ_layer_texture(particle_mask_source, WHITE, false, true)
 
 
-func _make_germ_layer_texture(source: Texture2D, target: Color, alpha_mask: bool) -> Texture2D:
+func _make_germ_layer_texture(source: Texture2D, target: Color, alpha_mask: bool, preserve_color: bool = false) -> Texture2D:
 	var image := source.get_image()
 	image.convert(Image.FORMAT_RGBA8)
 	for y in image.get_height():
@@ -316,7 +374,7 @@ func _make_germ_layer_texture(source: Texture2D, target: Color, alpha_mask: bool
 				continue
 			if alpha_mask:
 				image.set_pixel(x, y, Color(1.0, 1.0, 1.0, pixel.a))
-			else:
+			elif not preserve_color:
 				var saturation := clampf(pixel.s * target.s, 0.0, 1.0)
 				var value := clampf(pixel.v * target.v, 0.0, 1.0)
 				image.set_pixel(x, y, Color.from_hsv(target.h, saturation, value, pixel.a))
@@ -337,6 +395,46 @@ func _germ_palette_color(tier: int) -> Color:
 		GermData.GermTier.BOSS_3:
 			return BOSS_3_FILL
 	return CYAN
+
+
+func _germ_asset_radius(tier: int) -> float:
+	return PEWPOID_ASSET_RADIUS if tier == GermData.GermTier.BOSS_2 else GERM_ASSET_RADIUS
+
+
+func _germ_visual_rotation(germ: Dictionary) -> float:
+	var speed := PEWPOID_ROTATION_SPEED if int(germ.tier) == GermData.GermTier.BOSS_2 else 0.1
+	return float(germ.phase) * speed
+
+
+func _pewpoid_emitter_offset(emitter: int, rotation: float, boss_radius: float) -> Vector2:
+	if emitter < 0 or emitter >= PEWPOID_EMITTER_OFFSETS.size():
+		return Vector2.ZERO
+	return Vector2(PEWPOID_EMITTER_OFFSETS[emitter]).rotated(rotation) * (boss_radius / PEWPOID_ASSET_RADIUS)
+
+
+func _debris_radius(fragment: Dictionary) -> float:
+	return float(fragment.get("radius", DEFAULT_DEBRIS_RADIUS))
+
+
+func _debris_boundary_radius(fragment: Dictionary) -> float:
+	return maxf(DEFAULT_DEBRIS_BOUNDARY_RADIUS, _debris_radius(fragment))
+
+
+func _is_boid(fragment: Dictionary) -> bool:
+	return int(fragment.get("source", DebrisSource.REGULAR)) == DebrisSource.BOID
+
+
+func _boid_idle_layer_scale(fragment: Dictionary, layer: int) -> float:
+	if bool(saved.get("reduced_motion", false)) or layer < 0 or layer >= BOID_IDLE_LAYER_STARTS.size():
+		return 1.0
+	var phase := fposmod(float(fragment.get("phase", 0.0)), 1.0)
+	var start := float(BOID_IDLE_LAYER_STARTS[layer])
+	var peak := float(BOID_IDLE_LAYER_PEAKS[layer])
+	if phase <= start:
+		return 1.0
+	if phase <= peak:
+		return lerpf(1.0, 1.1, clampf((phase - start) / maxf(peak - start, 0.0001), 0.0, 1.0))
+	return lerpf(1.1, 1.0, clampf((phase - peak) / maxf(1.0 - peak, 0.0001), 0.0, 1.0))
 
 
 func _germ_hit_layer_scale(germ: Dictionary, layer: int) -> float:
@@ -439,6 +537,7 @@ func _update_run(delta: float) -> void:
 		_fire_pellet()
 	_update_beam(delta)
 
+	_update_delayed_volleys(delta)
 	_update_pellets(delta)
 	_update_spawn_warnings(delta)
 	_update_item_warnings(delta)
@@ -618,6 +717,7 @@ func _damage_player(reason: String, ignore_spawn_protection: bool = false) -> bo
 		return false
 	player_health = maxi(0, player_health - 1)
 	emit_signal("health_changed", player_health, player_max_health)
+	_trigger_fever_response()
 	if player_health <= 0:
 		_finish_run(reason)
 		return true
@@ -629,6 +729,29 @@ func _damage_player(reason: String, ignore_spawn_protection: bool = false) -> bo
 	return true
 
 
+func _trigger_fever_response() -> void:
+	var level := _effective_item_level(ItemData.ItemType.FEVER_RESPONSE)
+	if level <= 0:
+		return
+	var radius := ItemData.fever_radius(level)
+	var germ_targets: Array[int] = []
+	var debris_targets: Array[int] = []
+	for i in germs.size():
+		if not bool(germs[i].active) or _is_boss_tier(int(germs[i].tier)):
+			continue
+		var spec := germ_specs[int(germs[i].tier)]
+		if radius == INF or player_pos.distance_squared_to(Vector2(germs[i].pos)) <= pow(radius + spec.radius * 0.5, 2.0):
+			germ_targets.append(i)
+	for i in debris.size():
+		if bool(debris[i].active) and (radius == INF or player_pos.distance_squared_to(Vector2(debris[i].pos)) <= pow(radius + _debris_radius(debris[i]), 2.0)):
+			debris_targets.append(i)
+	for index in germ_targets:
+		_damage_germ(index, 1)
+	for index in debris_targets:
+		_destroy_debris(index)
+	_spawn_effect_flash(player_pos, arena_radius if radius == INF else minf(radius, arena_radius), ItemData.color(ItemData.ItemType.FEVER_RESPONSE))
+
+
 func _restore_player_health() -> void:
 	player_max_health = BoonData.player_max_health(_boon_level(BoonData.BoonType.MAX_HEALTH)) + boss_health_bonus
 	player_health = player_max_health
@@ -637,10 +760,18 @@ func _restore_player_health() -> void:
 
 
 func _fire_pellet() -> void:
+	if not _spawn_player_volley(player_facing):
+		return
+	fire_cooldown = _player_fire_interval()
+	_queue_delayed_release(player_facing)
+	audio.play_sfx("fire")
+
+
+func _spawn_player_volley(facing: float) -> bool:
 	var spread_level := _effective_item_level(ItemData.ItemType.SPREAD)
 	var ricochet_level := _effective_item_level(ItemData.ItemType.RICOCHET)
 	var angles := ItemData.spread_angles(spread_level)
-	var center_direction := Vector2.RIGHT.rotated(player_facing)
+	var center_direction := Vector2.RIGHT.rotated(facing)
 	var center_spawned := _spawn_projectile(
 		player_pos + center_direction * (PLAYER_RADIUS + 11.0),
 		center_direction,
@@ -652,9 +783,9 @@ func _fire_pellet() -> void:
 		_player_projectile_damage()
 	)
 	if not center_spawned:
-		return
+		return false
 	for i in range(1, angles.size()):
-		var direction := Vector2.RIGHT.rotated(player_facing + float(angles[i]))
+		var direction := Vector2.RIGHT.rotated(facing + float(angles[i]))
 		_spawn_projectile(
 			player_pos + direction * (PLAYER_RADIUS + 11.0),
 			direction,
@@ -665,8 +796,36 @@ func _fire_pellet() -> void:
 			player_velocity * 0.22,
 			_player_projectile_damage()
 		)
-	fire_cooldown = _player_fire_interval()
-	audio.play_sfx("fire")
+	return true
+
+
+func _queue_delayed_release(facing: float) -> void:
+	var level := _effective_item_level(ItemData.ItemType.DELAYED_RELEASE)
+	var interval := ItemData.delayed_release_interval(level)
+	if interval <= 0:
+		return
+	delayed_volley_counter += 1
+	if delayed_volley_counter < interval:
+		return
+	delayed_volley_counter = 0
+	for i in delayed_volleys.size():
+		if bool(delayed_volleys[i].active):
+			continue
+		delayed_volleys[i] = {"active": true, "delay": DELAYED_VOLLEY_SECONDS, "facing": facing}
+		return
+
+
+func _update_delayed_volleys(delta: float) -> void:
+	for i in delayed_volleys.size():
+		if not bool(delayed_volleys[i].active):
+			continue
+		delayed_volleys[i].delay = float(delayed_volleys[i].delay) - delta
+		if float(delayed_volleys[i].delay) > 0.0:
+			continue
+		var facing := float(delayed_volleys[i].facing)
+		delayed_volleys[i].active = false
+		if _spawn_player_volley(facing):
+			audio.play_sfx("fire")
 
 
 func _player_projectile_damage() -> int:
@@ -769,7 +928,7 @@ func _damage_beam(level: int) -> void:
 		if _distance_squared_to_segment(Vector2(germs[i].pos), start, finish) <= radius * radius:
 			germ_targets.append(i)
 	for i in debris.size():
-		if bool(debris[i].active) and _distance_squared_to_segment(Vector2(debris[i].pos), start, finish) <= pow(8.0 + width * 0.5, 2.0):
+		if bool(debris[i].active) and _distance_squared_to_segment(Vector2(debris[i].pos), start, finish) <= pow(_debris_radius(debris[i]) + width * 0.5, 2.0):
 			debris_targets.append(i)
 	for index in germ_targets:
 		_damage_germ(index, damage)
@@ -795,7 +954,7 @@ func _activate_freeze_shock() -> void:
 		if bool(germs[i].active) and player_pos.distance_squared_to(Vector2(germs[i].pos)) <= pow(radius + germ_specs[int(germs[i].tier)].radius, 2.0):
 			germs[i].freeze_left = maxf(float(germs[i].get("freeze_left", 0.0)), duration)
 	for i in debris.size():
-		if bool(debris[i].active) and player_pos.distance_squared_to(Vector2(debris[i].pos)) <= pow(radius + 8.0, 2.0):
+		if bool(debris[i].active) and player_pos.distance_squared_to(Vector2(debris[i].pos)) <= pow(radius + _debris_radius(debris[i]), 2.0):
 			debris[i].freeze_left = maxf(float(debris[i].get("freeze_left", 0.0)), duration)
 	freeze_cooldown = BoonData.freeze_cooldown(level)
 	freeze_flash_left = 0.35
@@ -834,7 +993,7 @@ func _update_goo_patches(delta: float) -> void:
 	for i in debris.size():
 		if not bool(debris[i].active) or float(debris[i].get("goo_hit_cooldown", 0.0)) > 0.0:
 			continue
-		if _hostile_overlaps_goo(Vector2(debris[i].pos), 8.0):
+		if _hostile_overlaps_goo(Vector2(debris[i].pos), _debris_radius(debris[i])):
 			debris[i].goo_hit_cooldown = BoonData.GOO_HIT_COOLDOWN
 			debris_targets.append(i)
 	for index in germ_targets:
@@ -856,6 +1015,7 @@ func _spawn_projectile(at: Vector2, direction: Vector2, speed: float, life: floa
 			continue
 		var piercing_level := _effective_item_level(ItemData.ItemType.PIERCING_DOSE) if owner == ProjectileOwner.PLAYER else 0
 		var seeking_level := _effective_item_level(ItemData.ItemType.SEEKING_ENZYME) if owner == ProjectileOwner.PLAYER else 0
+		var spectrum_level := _effective_item_level(ItemData.ItemType.BROAD_SPECTRUM) if owner == ProjectileOwner.PLAYER else 0
 		pellets[i] = {
 			"active": true,
 			"pos": at,
@@ -869,6 +1029,8 @@ func _spawn_projectile(at: Vector2, direction: Vector2, speed: float, life: floa
 			"hit_debris_high": 0,
 			"seek_target": _nearest_germ_index(at, ItemData.seeking_range(seeking_level)) if seeking_level > 0 else -1,
 			"damage": damage,
+			"radius": ItemData.projectile_radius(spectrum_level),
+			"age": 0.0,
 		}
 		return true
 	return false
@@ -883,12 +1045,14 @@ func _update_pellets(delta: float) -> void:
 		if int(p.owner) == ProjectileOwner.PLAYER and seeking_level > 0:
 			_update_seeking_projectile(p, seeking_level, delta)
 		p.pos += p.vel * delta
+		p.age = float(p.get("age", 0.0)) + delta
 		p.life = float(p.life) - delta
 		var edge := Vector2(p.pos) - arena_center
-		if edge.length() + 5.0 > arena_radius:
+		var projectile_radius := float(p.get("radius", 5.0))
+		if edge.length() + projectile_radius > arena_radius:
 			if int(p.bounces) > 0:
 				var normal := edge.normalized()
-				p.pos = arena_center + normal * (arena_radius - 5.0)
+				p.pos = arena_center + normal * (arena_radius - projectile_radius)
 				p.vel = Vector2(p.vel).bounce(normal)
 				p.bounces = int(p.bounces) - 1
 			else:
@@ -989,9 +1153,12 @@ func _update_boss_movement(germ: Dictionary, delta: float) -> Dictionary:
 				g.vel = Vector2(g.dash_direction) * float(g.move_speed)
 		BossDashPhase.VOLLEY_WARNING:
 			g.vel = Vector2.ZERO
+			if tier == GermData.GermTier.BOSS_2:
+				g.volley_rotation = _germ_visual_rotation(g)
 			g.volley_timer = float(g.volley_timer) - delta
 			if float(g.volley_timer) <= 0.0:
-				_spawn_boss_volley(Vector2(g.pos), float(g.volley_rotation), tier)
+				var volley_rotation := _germ_visual_rotation(g) if tier == GermData.GermTier.BOSS_2 else float(g.volley_rotation)
+				_spawn_boss_volley(Vector2(g.pos), volley_rotation, tier)
 				g.dash_phase = BossDashPhase.CHASE
 				g.volley_timer = GameMath.BOSS_VOLLEY_COOLDOWN
 		BossDashPhase.RING_WARNING:
@@ -1032,7 +1199,7 @@ func _update_boss_movement(germ: Dictionary, delta: float) -> Dictionary:
 			elif _boss_has_volley(tier) and float(g.volley_timer) <= 0.0:
 				g.dash_phase = BossDashPhase.VOLLEY_WARNING
 				g.volley_timer = GameMath.BOSS_VOLLEY_WARNING_SECONDS
-				g.volley_rotation = rng.randf_range(0.0, TAU)
+				g.volley_rotation = _germ_visual_rotation(g) if tier == GermData.GermTier.BOSS_2 else rng.randf_range(0.0, TAU)
 				g.vel = Vector2.ZERO
 			elif _boss_has_ring(tier) and float(g.ring_timer) <= 0.0:
 				g.dash_phase = BossDashPhase.RING_WARNING
@@ -1057,65 +1224,127 @@ func _boss_ring_swept_hits_player(germ: Dictionary, previous_radius: float, next
 
 
 func _spawn_boss_volley(at: Vector2, rotation: float, boss_tier: int = GermData.GermTier.BOSS_2) -> void:
-	var spawn_radius := germ_specs[boss_tier].radius + 12.0
-	for shot in GameMath.BOSS_VOLLEY_COUNT:
-		var angle := rotation + TAU * float(shot) / float(GameMath.BOSS_VOLLEY_COUNT)
-		var direction := Vector2.RIGHT.rotated(angle)
-		var spawn_position := at + direction * spawn_radius
+	var pewpoid_volley := boss_tier == GermData.GermTier.BOSS_2
+	var shot_count := GameMath.PEWPOID_VOLLEY_COUNT if pewpoid_volley else GameMath.BOSS_VOLLEY_COUNT
+	for shot in shot_count:
+		var direction := Vector2.RIGHT.rotated(rotation + TAU * float(shot) / float(shot_count))
+		var spawn_offset := direction * (germ_specs[boss_tier].radius + 12.0)
+		if pewpoid_volley:
+			spawn_offset = _pewpoid_emitter_offset(shot, rotation, germ_specs[boss_tier].radius)
+			direction = spawn_offset.normalized()
+		var angle := direction.angle()
+		var spawn_position := at + spawn_offset
+		var source := DebrisSource.BOID if pewpoid_volley else DebrisSource.BOSS_VOLLEY
+		var fragment_radius := BOID_RADIUS if pewpoid_volley else DEFAULT_DEBRIS_RADIUS
+		var boundary_radius := maxf(DEFAULT_DEBRIS_BOUNDARY_RADIUS, fragment_radius)
 		var from_center := spawn_position - arena_center
-		if from_center.length() + 10.0 > arena_radius:
-			spawn_position = arena_center + from_center.normalized() * (arena_radius - 10.0)
+		if from_center.length() + boundary_radius > arena_radius:
+			spawn_position = arena_center + from_center.normalized() * (arena_radius - boundary_radius)
 		for i in debris.size():
 			if bool(debris[i].active):
 				continue
+			var trail_seed := 0.0
+			var trail_count := 0
+			if pewpoid_volley:
+				boid_trail_points[i * BOID_TRAIL_CAPACITY] = spawn_position
+				trail_seed = fposmod(float(debris_visual_sequence) * 2.39996323 + float(i) * 0.75487767, TAU)
+				debris_visual_sequence += 1
+				trail_count = 1
 			debris[i] = {
 				"active": true,
 				"pos": spawn_position,
 				"vel": direction * GameMath.BOSS_VOLLEY_SPEED,
 				"life": GameMath.BOSS_VOLLEY_LIFETIME,
 				"angle": angle,
-				"spin": rng.randf_range(-6.0, 6.0),
+				"spin": 0.0 if pewpoid_volley else rng.randf_range(-6.0, 6.0),
+				"phase": 0.0,
+				"radius": fragment_radius,
 				"hitter_cooldown": 0.0,
 				"goo_hit_cooldown": 0.0,
 				"freeze_left": 0.0,
-				"source": DebrisSource.BOSS_VOLLEY,
+				"source": source,
 				"bounces": GameMath.BOSS_VOLLEY_BOUNCES,
+				"trail_head": 0,
+				"trail_count": trail_count,
+				"trail_distance": 0.0,
+				"trail_seed": trail_seed,
 			}
 			break
 	audio.play_sfx("mine")
 
 
+func _append_boid_trail_point(index: int, point: Vector2, fragment: Dictionary) -> void:
+	var head := (int(fragment.get("trail_head", 0)) + 1) % BOID_TRAIL_CAPACITY
+	boid_trail_points[index * BOID_TRAIL_CAPACITY + head] = point
+	fragment.trail_head = head
+	fragment.trail_count = mini(int(fragment.get("trail_count", 0)) + 1, BOID_TRAIL_CAPACITY)
+
+
+func _record_boid_trail(index: int, from: Vector2, to: Vector2, fragment: Dictionary) -> void:
+	var segment := to - from
+	var segment_length := segment.length()
+	if segment_length <= 0.0001:
+		return
+	var distance_since_sample := float(fragment.get("trail_distance", 0.0))
+	var consumed := 0.0
+	var distance_to_next := BOID_TRAIL_SAMPLE_DISTANCE - distance_since_sample
+	while segment_length - consumed >= distance_to_next:
+		consumed += distance_to_next
+		_append_boid_trail_point(index, from + segment * (consumed / segment_length), fragment)
+		distance_to_next = BOID_TRAIL_SAMPLE_DISTANCE
+		distance_since_sample = 0.0
+	fragment.trail_distance = distance_since_sample + segment_length - consumed
+
+
+func _boid_trail_point(index: int, fragment: Dictionary, ordered_index: int) -> Vector2:
+	var count := int(fragment.get("trail_count", 0))
+	if count <= 0 or ordered_index < 0 or ordered_index >= count:
+		return Vector2(fragment.pos)
+	var oldest := posmod(int(fragment.get("trail_head", 0)) - count + 1, BOID_TRAIL_CAPACITY)
+	var slot := (oldest + ordered_index) % BOID_TRAIL_CAPACITY
+	return boid_trail_points[index * BOID_TRAIL_CAPACITY + slot]
+
+
 func _update_debris(delta: float) -> void:
 	var inhibitor_level := _effective_item_level(ItemData.ItemType.INHIBITOR_FIELD)
-	var inhibitor_radius_squared := pow(ItemData.inhibitor_radius(inhibitor_level), 2.0)
+	var inhibitor_radius := ItemData.inhibitor_radius(inhibitor_level)
 	var inhibitor_speed_mult := ItemData.inhibitor_speed_multiplier(inhibitor_level)
 	for i in debris.size():
 		if not bool(debris[i].active):
 			continue
 		var d := debris[i]
+		var previous_position := Vector2(d.pos)
 		d.hitter_cooldown = maxf(0.0, float(d.hitter_cooldown) - delta)
 		d.goo_hit_cooldown = maxf(0.0, float(d.get("goo_hit_cooldown", 0.0)) - delta)
 		var frozen := float(d.get("freeze_left", 0.0)) > 0.0
 		d.freeze_left = maxf(0.0, float(d.get("freeze_left", 0.0)) - delta)
 		var simulation_delta := 0.0 if frozen else delta
-		var local_speed_mult := inhibitor_speed_mult if inhibitor_level > 0 and player_pos.distance_squared_to(Vector2(d.pos)) <= inhibitor_radius_squared else 1.0
+		var local_speed_mult := inhibitor_speed_mult if inhibitor_level > 0 and player_pos.distance_squared_to(Vector2(d.pos)) <= pow(inhibitor_radius + _debris_radius(d), 2.0) else 1.0
 		d.pos += Vector2(d.vel) * simulation_delta * local_speed_mult
 		d.angle = float(d.angle) + float(d.spin) * simulation_delta * local_speed_mult
+		if _is_boid(d):
+			d.phase = float(d.get("phase", 0.0)) + simulation_delta
 		d.life = float(d.life) - simulation_delta
 		var edge := Vector2(d.pos) - arena_center
-		if edge.length() + 10.0 > arena_radius:
+		var boundary_radius := _debris_boundary_radius(d)
+		var expired := false
+		if edge.length() + boundary_radius > arena_radius:
 			var remaining_bounces := int(d.get("bounces", -1))
+			var normal := edge.normalized()
+			d.pos = arena_center + normal * (arena_radius - boundary_radius)
 			if remaining_bounces == 0:
-				d.active = false
+				expired = true
 			else:
-				var normal := edge.normalized()
-				d.pos = arena_center + normal * (arena_radius - 10.0)
 				d.vel = Vector2(d.vel).bounce(normal) * 0.82
 				if remaining_bounces > 0:
 					d.bounces = remaining_bounces - 1
 		if float(d.life) <= 0.0:
-			d.active = false
+			expired = true
+		if _is_boid(d) and not expired:
+			_record_boid_trail(i, previous_position, Vector2(d.pos), d)
 		debris[i] = d
+		if expired:
+			_expire_debris(i)
 
 
 func _resolve_projectile_hits() -> void:
@@ -1124,6 +1353,8 @@ func _resolve_projectile_hits() -> void:
 			continue
 		var projectile := pellets[pi]
 		var pellet_pos := Vector2(projectile.pos)
+		var projectile_radius := float(projectile.get("radius", 5.0))
+		var player_owned := int(projectile.owner) == ProjectileOwner.PLAYER
 		for gi in germs.size():
 			if not bool(germs[gi].active):
 				continue
@@ -1131,9 +1362,16 @@ func _resolve_projectile_hits() -> void:
 			if (int(projectile.hit_germs) & germ_bit) != 0:
 				continue
 			var spec := germ_specs[int(germs[gi].tier)]
-			if pellet_pos.distance_squared_to(Vector2(germs[gi].pos)) <= pow(spec.radius + 5.0, 2.0):
+			if pellet_pos.distance_squared_to(Vector2(germs[gi].pos)) <= pow(spec.radius + projectile_radius, 2.0):
 				projectile.hit_germs = int(projectile.hit_germs) | germ_bit
-				_damage_germ(gi, int(projectile.get("damage", 1)))
+				var damage := int(projectile.get("damage", 1))
+				if player_owned:
+					damage += ItemData.osmotic_bonus(_effective_item_level(ItemData.ItemType.OSMOTIC_ROUNDS), float(projectile.get("age", 0.0)))
+					damage += _concentrated_dose_bonus(gi)
+				var target_survives := int(germs[gi].hp) > damage
+				_damage_germ(gi, damage, player_owned)
+				if player_owned and target_survives:
+					_apply_repulsor_dose(gi, Vector2(projectile.vel))
 				if int(projectile.pierces) > 0:
 					projectile.pierces = int(projectile.pierces) - 1
 				else:
@@ -1150,7 +1388,7 @@ func _resolve_projectile_hits() -> void:
 			var debris_mask := int(projectile.hit_debris_low) if di < 40 else int(projectile.hit_debris_high)
 			if (debris_mask & debris_bit) != 0:
 				continue
-			if pellet_pos.distance_squared_to(Vector2(debris[di].pos)) <= 225.0:
+			if pellet_pos.distance_squared_to(Vector2(debris[di].pos)) <= pow(_debris_boundary_radius(debris[di]) + projectile_radius, 2.0):
 				if di < 40:
 					projectile.hit_debris_low = debris_mask | debris_bit
 				else:
@@ -1164,12 +1402,51 @@ func _resolve_projectile_hits() -> void:
 		pellets[pi] = projectile
 
 
-func _damage_germ(index: int, amount: int) -> bool:
+func _concentrated_dose_bonus(index: int) -> int:
+	var level := _effective_item_level(ItemData.ItemType.CONCENTRATED_DOSE)
+	var interval := ItemData.concentrated_hit_interval(level)
+	if interval <= 0 or index < 0 or index >= germs.size() or not bool(germs[index].active):
+		return 0
+	var hits := int(germs[index].get("dose_hits", 0)) + 1
+	if hits >= interval:
+		germs[index].dose_hits = 0
+		return 1
+	germs[index].dose_hits = hits
+	return 0
+
+
+func _apply_repulsor_dose(index: int, projectile_velocity: Vector2) -> void:
+	var level := _effective_item_level(ItemData.ItemType.REPULSOR_DOSE)
+	if level <= 0 or index < 0 or index >= germs.size() or not bool(germs[index].active):
+		return
+	var direction := projectile_velocity.normalized()
+	if direction.length_squared() <= 0.001:
+		direction = (Vector2(germs[index].pos) - player_pos).normalized()
+	if direction.length_squared() <= 0.001:
+		direction = Vector2.RIGHT.rotated(player_facing)
+	var tier := int(germs[index].tier)
+	var distance := ItemData.repulsor_distance(level)
+	if _is_boss_tier(tier):
+		distance *= 0.25
+	var at := Vector2(germs[index].pos) + direction * distance
+	var edge := at - arena_center
+	var limit := arena_radius - germ_specs[tier].radius
+	if edge.length() > limit:
+		at = arena_center + edge.normalized() * limit
+	germs[index].pos = at
+
+
+func _damage_germ(index: int, amount: int, trigger_lysis: bool = false) -> bool:
 	if index < 0 or index >= germs.size() or not bool(germs[index].active):
 		return false
+	var at := Vector2(germs[index].pos)
+	var lysis_level := _effective_item_level(ItemData.ItemType.LYSIS_CASCADE) if trigger_lysis else 0
 	germs[index].hp = int(germs[index].hp) - amount
 	if int(germs[index].hp) <= 0:
 		_destroy_germ(index)
+		if lysis_level > 0:
+			_damage_germs_only(at, ItemData.lysis_radius(lysis_level), ItemData.lysis_damage(lysis_level))
+			_spawn_effect_flash(at, ItemData.lysis_radius(lysis_level), ItemData.color(ItemData.ItemType.LYSIS_CASCADE))
 	else:
 		if not bool(saved.get("reduced_motion", false)):
 			germs[index].hit_reaction_left = GERM_HIT_REACTION_SECONDS
@@ -1181,12 +1458,28 @@ func _destroy_debris(index: int, trigger_cleanup: bool = false) -> bool:
 	if index < 0 or index >= debris.size() or not bool(debris[index].active):
 		return false
 	var at := Vector2(debris[index].pos)
-	debris[index].active = false
+	_expire_debris(index)
 	_award_kill(10, at)
 	var cleanup_level := _effective_item_level(ItemData.ItemType.CATALYTIC_CLEANUP)
 	if trigger_cleanup and cleanup_level > 0:
 		_damage_germs_only(at, ItemData.cleanup_radius(cleanup_level), ItemData.cleanup_damage(cleanup_level))
 		_spawn_effect_flash(at, ItemData.cleanup_radius(cleanup_level), ItemData.color(ItemData.ItemType.CATALYTIC_CLEANUP))
+	return true
+
+
+func _expire_debris(index: int, spawn_effect: bool = true) -> bool:
+	if index < 0 or index >= debris.size() or not bool(debris[index].active):
+		return false
+	var was_boid := _is_boid(debris[index])
+	var at := Vector2(debris[index].pos)
+	debris[index].active = false
+	debris[index].trail_head = 0
+	debris[index].trail_count = 0
+	debris[index].trail_distance = 0.0
+	for point in BOID_TRAIL_CAPACITY:
+		boid_trail_points[index * BOID_TRAIL_CAPACITY + point] = Vector2.ZERO
+	if was_boid and spawn_effect:
+		_spawn_boid_explosion(at)
 	return true
 
 
@@ -1212,7 +1505,7 @@ func _damage_area(at: Vector2, radius: float, amount: int) -> void:
 		if at.distance_squared_to(Vector2(germs[i].pos)) <= pow(radius + spec.radius * 0.5, 2.0):
 			germ_targets.append(i)
 	for i in debris.size():
-		if bool(debris[i].active) and at.distance_squared_to(Vector2(debris[i].pos)) <= pow(radius + 8.0, 2.0):
+		if bool(debris[i].active) and at.distance_squared_to(Vector2(debris[i].pos)) <= pow(radius + _debris_radius(debris[i]), 2.0):
 			debris_targets.append(i)
 	for index in germ_targets:
 		_damage_germ(index, amount)
@@ -1239,7 +1532,7 @@ func _update_spinning_hitters(delta: float) -> void:
 		for di in debris.size():
 			if not bool(debris[di].active) or float(debris[di].hitter_cooldown) > 0.0:
 				continue
-			if hitter_pos.distance_squared_to(Vector2(debris[di].pos)) <= 324.0:
+			if hitter_pos.distance_squared_to(Vector2(debris[di].pos)) <= pow(10.0 + _debris_radius(debris[di]), 2.0):
 				debris[di].hitter_cooldown = HITTER_HIT_COOLDOWN
 				_destroy_debris(di)
 
@@ -1358,7 +1651,7 @@ func _hostile_within(at: Vector2, radius: float) -> bool:
 		if bool(g.active) and at.distance_squared_to(Vector2(g.pos)) <= radius_squared:
 			return true
 	for d in debris:
-		if bool(d.active) and at.distance_squared_to(Vector2(d.pos)) <= radius_squared:
+		if bool(d.active) and at.distance_squared_to(Vector2(d.pos)) <= pow(radius + _debris_radius(d), 2.0):
 			return true
 	return false
 
@@ -1381,6 +1674,18 @@ func _update_aoe(delta: float) -> void:
 
 
 func _resolve_hostile_hits() -> void:
+	for i in debris.size():
+		if not bool(debris[i].active) or not _is_boid(debris[i]):
+			continue
+		if player_pos.distance_squared_to(Vector2(debris[i].pos)) > pow(PLAYER_RADIUS + _debris_radius(debris[i]), 2.0):
+			continue
+		_expire_debris(i)
+		if _player_damage_blocked():
+			return
+		if _trigger_antibody_shell():
+			return
+		_damage_player("Debris contact")
+		return
 	if _player_damage_blocked():
 		return
 	for g in germs:
@@ -1393,7 +1698,7 @@ func _resolve_hostile_hits() -> void:
 			_damage_player("Germ contact")
 			return
 	for d in debris:
-		if bool(d.active) and player_pos.distance_squared_to(Vector2(d.pos)) <= pow(PLAYER_RADIUS + 8.0, 2.0):
+		if bool(d.active) and player_pos.distance_squared_to(Vector2(d.pos)) <= pow(PLAYER_RADIUS + _debris_radius(d), 2.0):
 			if _trigger_antibody_shell():
 				return
 			_damage_player("Debris contact")
@@ -1440,7 +1745,7 @@ func _repel_hostiles(radius: float) -> void:
 			g.pos = arena_center + edge.normalized() * (arena_radius - spec.radius)
 		germs[i] = g
 	for i in debris.size():
-		if not bool(debris[i].active) or player_pos.distance_squared_to(Vector2(debris[i].pos)) > radius_squared:
+		if not bool(debris[i].active) or player_pos.distance_squared_to(Vector2(debris[i].pos)) > pow(radius + _debris_radius(debris[i]), 2.0):
 			continue
 		var d := debris[i]
 		var away := Vector2(d.pos) - player_pos
@@ -1450,12 +1755,13 @@ func _repel_hostiles(radius: float) -> void:
 		d.pos = Vector2(d.pos) + away * 8.0
 		d.vel = away * ANTIBODY_REPEL_SPEED
 		var edge := Vector2(d.pos) - arena_center
-		if edge.length() + 10.0 > arena_radius:
-			d.pos = arena_center + edge.normalized() * (arena_radius - 10.0)
+		var boundary_radius := _debris_boundary_radius(d)
+		if edge.length() + boundary_radius > arena_radius:
+			d.pos = arena_center + edge.normalized() * (arena_radius - boundary_radius)
 		debris[i] = d
 
 
-func _spawn_germ(tier: int, position_override: Variant = null, topic_override: int = -1, stance_override: int = -1, dialogue_priority: bool = false, speed_multiplier: float = 1.0) -> bool:
+func _spawn_germ(tier: int, position_override: Variant = null, topic_override: int = -1, stance_override: int = -1, dialogue_priority: bool = false, speed_multiplier: float = 1.0, initial_freeze: float = 0.0) -> bool:
 	var first_index := 0
 	var end_index := GameMath.MAX_REGULAR_GERMS
 	if tier == GermData.GermTier.ELITE:
@@ -1480,7 +1786,7 @@ func _spawn_germ(tier: int, position_override: Variant = null, topic_override: i
 			topic_id = topic_override if topic_override >= 0 else rng.randi_range(0, CULTURE_WAR_DIALOGUE.topic_count() - 1)
 			if tier != GermData.GermTier.LARGE:
 				stance = stance_override if stance_override >= 0 else rng.randi_range(CULTURE_WAR_DIALOGUE.STANCE_A, CULTURE_WAR_DIALOGUE.STANCE_B)
-		germs[i] = {"active": true, "tier": tier, "pos": at, "vel": direction * speed, "move_speed": speed, "hp": spec.hp, "phase": rng.randf_range(0.0, TAU), "hitter_cooldown": 0.0, "goo_hit_cooldown": 0.0, "freeze_left": 0.0, "hit_reaction_left": 0.0, "topic_id": topic_id, "stance": stance, "dash_phase": BossDashPhase.CHASE, "dash_timer": GameMath.BOSS_INITIAL_DASH_DELAY if _is_boss_tier(tier) else INF, "dash_direction": Vector2.ZERO, "volley_timer": GameMath.BOSS_VOLLEY_INITIAL_DELAY if _boss_has_volley(tier) else INF, "volley_rotation": 0.0, "ring_timer": GameMath.BOSS_RING_INITIAL_DELAY if _boss_has_ring(tier) else INF, "ring_angle": 0.0, "ring_hit_player": false}
+		germs[i] = {"active": true, "tier": tier, "pos": at, "vel": direction * speed, "move_speed": speed, "hp": spec.hp, "phase": rng.randf_range(0.0, TAU), "hitter_cooldown": 0.0, "goo_hit_cooldown": 0.0, "freeze_left": initial_freeze, "hit_reaction_left": 0.0, "dose_hits": 0, "topic_id": topic_id, "stance": stance, "dash_phase": BossDashPhase.CHASE, "dash_timer": GameMath.BOSS_INITIAL_DASH_DELAY if _is_boss_tier(tier) else INF, "dash_direction": Vector2.ZERO, "volley_timer": GameMath.BOSS_VOLLEY_INITIAL_DELAY if _boss_has_volley(tier) else INF, "volley_rotation": 0.0, "ring_timer": GameMath.BOSS_RING_INITIAL_DELAY if _boss_has_ring(tier) else INF, "ring_angle": 0.0, "ring_hit_player": false}
 		if _is_boss_tier(tier):
 			boss_encounter_phase = BossEncounterPhase.ACTIVE
 		_try_show_germ_dialogue(i, dialogue_priority or tier == GermData.GermTier.LARGE or tier == GermData.GermTier.ELITE or _is_boss_tier(tier))
@@ -1655,11 +1961,33 @@ func _spawn_effect_flash(at: Vector2, radius: float, color: Color) -> bool:
 			continue
 		effect_flashes[i] = {
 			"active": true,
+			"style": EffectStyle.RING,
 			"pos": at,
 			"radius": radius,
 			"life": 0.3,
 			"duration": 0.3,
 			"color": color,
+			"seed": 0.0,
+		}
+		return true
+	return false
+
+
+func _spawn_boid_explosion(at: Vector2) -> bool:
+	for i in effect_flashes.size():
+		if bool(effect_flashes[i].active):
+			continue
+		var seed := fposmod(float(effect_visual_sequence) * 2.39996323, TAU)
+		effect_visual_sequence += 1
+		effect_flashes[i] = {
+			"active": true,
+			"style": EffectStyle.BOID_EXPLOSION,
+			"pos": at,
+			"radius": 0.0,
+			"life": BOID_EXPLOSION_DURATION,
+			"duration": BOID_EXPLOSION_DURATION,
+			"color": BOID_EXPLOSION_COLOR,
+			"seed": seed,
 		}
 		return true
 	return false
@@ -1689,11 +2017,17 @@ func _spawn_debris(at: Vector2, count: int) -> void:
 			"life": DEBRIS_LIFETIME,
 			"angle": angle,
 			"spin": rng.randf_range(-4.5, 4.5),
+			"phase": 0.0,
+			"radius": DEFAULT_DEBRIS_RADIUS,
 			"hitter_cooldown": 0.0,
 			"goo_hit_cooldown": 0.0,
 			"freeze_left": 0.0,
 			"source": DebrisSource.REGULAR,
 			"bounces": -1,
+			"trail_head": 0,
+			"trail_count": 0,
+			"trail_distance": 0.0,
+			"trail_seed": 0.0,
 		}
 		made += 1
 		if made >= count:
@@ -1716,10 +2050,11 @@ func _destroy_germ(index: int) -> void:
 	var spec := germ_specs[tier]
 	_award_kill(spec.score, at)
 	var split := GameMath.split_result(tier)
+	var split_freeze := ItemData.split_freeze_duration(_effective_item_level(ItemData.ItemType.SPLIT_SHOCK))
 	for child in int(split.children):
 		var offset := Vector2.RIGHT.rotated(TAU * float(child) / maxf(1.0, float(split.children)) + rng.randf_range(-0.25, 0.25)) * 16.0
 		var child_stance := child if tier == GermData.GermTier.LARGE else stance
-		_spawn_germ(int(split.child_tier), at + offset, topic_id, child_stance, true, SPLIT_CHILD_SPEED_MULTIPLIER)
+		_spawn_germ(int(split.child_tier), at + offset, topic_id, child_stance, true, SPLIT_CHILD_SPEED_MULTIPLIER, split_freeze)
 	_spawn_debris(at, int(split.fragments))
 	if tier == GermData.GermTier.ELITE:
 		_queue_item_warning(at)
@@ -1910,8 +2245,9 @@ func _clear_transient_boon_effects() -> void:
 
 func _clear_boss_volley_debris() -> void:
 	for i in debris.size():
-		if bool(debris[i].active) and int(debris[i].get("source", DebrisSource.REGULAR)) == DebrisSource.BOSS_VOLLEY:
-			debris[i].active = false
+		var source := int(debris[i].get("source", DebrisSource.REGULAR))
+		if bool(debris[i].active) and (source == DebrisSource.BOSS_VOLLEY or source == DebrisSource.BOID):
+			_expire_debris(i, false)
 
 
 func _reset_abilities_for_boss_reward() -> void:
@@ -1920,6 +2256,7 @@ func _reset_abilities_for_boss_reward() -> void:
 	overcharge_item = -1
 	overcharge_left = 0.0
 	antibody_cooldown = 0.0
+	delayed_volley_counter = 0
 	hitter_angle = 0.0
 	aoe_timer = INF
 	aoe_warning_active = false
@@ -1935,6 +2272,10 @@ func _reset_abilities_for_boss_reward() -> void:
 		item_warnings[i].active = false
 	for i in effect_flashes.size():
 		effect_flashes[i].active = false
+	for i in delayed_volleys.size():
+		delayed_volleys[i].active = false
+	for i in germs.size():
+		germs[i].dose_hits = 0
 	for i in pellets.size():
 		if bool(pellets[i].active) and int(pellets[i].owner) == ProjectileOwner.TURRET:
 			pellets[i].active = false
@@ -2327,16 +2668,24 @@ func _start_run() -> void:
 		germs[i].ring_timer = INF
 		germs[i].ring_angle = 0.0
 		germs[i].ring_hit_player = false
-	for i in debris.size(): debris[i].active = false
+	for i in debris.size():
+		debris[i].active = false
+		debris[i].trail_head = 0
+		debris[i].trail_count = 0
+		debris[i].trail_distance = 0.0
+	boid_trail_points.fill(Vector2.ZERO)
 	for i in turrets.size(): turrets[i].active = false
 	for i in mines.size(): mines[i].active = false
 	for i in effect_flashes.size(): effect_flashes[i].active = false
+	for i in delayed_volleys.size(): delayed_volleys[i].active = false
 	for i in pickups.size(): pickups[i].active = false
 	for i in item_warnings.size(): item_warnings[i].active = false
 	for i in item_levels.size(): item_levels[i] = 0
 	for i in boon_levels.size(): boon_levels[i] = 0
 	for i in boon_choices.size(): boon_choices[i].active = false
 	for i in goo_patches.size(): goo_patches[i].active = false
+	debris_visual_sequence = 0
+	effect_visual_sequence = 0
 	spawn_warnings.clear()
 	popups.clear()
 	_reset_dialogue()
@@ -2359,6 +2708,7 @@ func _start_run() -> void:
 	overcharge_item = -1
 	overcharge_left = 0.0
 	antibody_cooldown = 0.0
+	delayed_volley_counter = 0
 	boss_encounter_phase = BossEncounterPhase.INACTIVE
 	bosses_defeated = 0
 	active_boss_stage = -1
@@ -2583,20 +2933,28 @@ func _draw_game_world() -> void:
 		for i in germs.size():
 			if bool(germs[i].active) and int(germs[i].tier) == tier:
 				_draw_germ(germs[i], offset, _dialogue_speaker_scale(i))
-	for d in debris:
-		if bool(d.active):
+	for i in debris.size():
+		var d := debris[i]
+		if not bool(d.active):
+			continue
+		if _is_boid(d):
+			_draw_boid_trail(i, d, offset)
+			_draw_boid(d, offset)
+		else:
 			_draw_debris(Vector2(d.pos) + offset, float(d.angle), int(d.get("source", DebrisSource.REGULAR)))
-			if float(d.get("freeze_left", 0.0)) > 0.0:
-				draw_arc(Vector2(d.pos) + offset, 15.0, 0.0, TAU, 24, Color(CYAN.r, CYAN.g, CYAN.b, 0.78), 2.0, true)
+		if float(d.get("freeze_left", 0.0)) > 0.0:
+			draw_arc(Vector2(d.pos) + offset, _debris_radius(d) + 7.0, 0.0, TAU, 32, Color(CYAN.r, CYAN.g, CYAN.b, 0.78), 2.0, true)
 	for p in pellets:
 		if bool(p.active):
 			var upgraded_player_shot := int(p.owner) == ProjectileOwner.PLAYER and int(p.get("damage", 1)) > 1
 			var pellet_color := ORANGE_HOT if upgraded_player_shot else (LIME if int(p.owner) == ProjectileOwner.PLAYER else PURPLE_SOFT)
-			var pellet_radius := 7.0 if upgraded_player_shot else 5.0
+			var pellet_radius := maxf(float(p.get("radius", 5.0)), 7.0 if upgraded_player_shot else 5.0)
 			draw_circle(Vector2(p.pos) + offset, pellet_radius, pellet_color)
 			draw_arc(Vector2(p.pos) + offset, pellet_radius + 1.5, 0.0, TAU, 18, WHITE if upgraded_player_shot else (LIME_DARK if int(p.owner) == ProjectileOwner.PLAYER else PURPLE), 1.5, true)
 			if int(p.owner) == ProjectileOwner.PLAYER and int(p.pierces) > 0:
 				draw_arc(Vector2(p.pos) + offset, pellet_radius + 4.0, 0.0, TAU, 18, ItemData.color(ItemData.ItemType.PIERCING_DOSE), 1.5, true)
+			if int(p.owner) == ProjectileOwner.PLAYER and ItemData.osmotic_bonus(_effective_item_level(ItemData.ItemType.OSMOTIC_ROUNDS), float(p.get("age", 0.0))) > 0:
+				draw_arc(Vector2(p.pos) + offset, pellet_radius + 6.0, 0.0, TAU, 18, ItemData.color(ItemData.ItemType.OSMOTIC_ROUNDS), 2.0, true)
 	_draw_beam(offset)
 	_draw_aoe_effect(offset)
 	_draw_freeze_effect(offset)
@@ -2656,12 +3014,35 @@ func _draw_inhibitor_field(offset: Vector2) -> void:
 
 
 func _draw_effect_flash(effect: Dictionary, offset: Vector2) -> void:
+	if int(effect.get("style", EffectStyle.RING)) == EffectStyle.BOID_EXPLOSION:
+		_draw_boid_explosion(effect, offset)
+		return
 	var progress := 1.0 - clampf(float(effect.life) / float(effect.duration), 0.0, 1.0)
 	var radius := float(effect.radius) * progress
 	var color := Color(effect.color)
 	var pos := Vector2(effect.pos) + offset
 	draw_circle(pos, radius, Color(color.r, color.g, color.b, (1.0 - progress) * 0.1))
 	draw_arc(pos, radius, 0.0, TAU, 64, Color(color.r, color.g, color.b, (1.0 - progress) * 0.9), 3.0, true)
+
+
+func _draw_boid_explosion(effect: Dictionary, offset: Vector2) -> void:
+	var progress := 1.0 - clampf(float(effect.life) / float(effect.duration), 0.0, 1.0)
+	var color := Color(effect.color)
+	var origin := Vector2(effect.pos) + offset
+	var seed := float(effect.get("seed", 0.0))
+	for particle in BOID_EXPLOSION_PARTICLES:
+		var variation := fposmod(seed / TAU + float(particle) * 0.381966, 1.0)
+		var angle := seed + TAU * float(particle) / float(BOID_EXPLOSION_PARTICLES) + (variation - 0.5) * 0.5
+		var speed := lerpf(60.0, 200.0, variation)
+		var displacement := speed * BOID_EXPLOSION_DURATION * progress * (1.0 - progress * 0.7)
+		if bool(saved.get("reduced_motion", false)):
+			displacement = 0.0
+		var scale_fade := 1.0 - smoothstep(0.45, 1.0, progress)
+		var texture_scale := lerpf(0.05, 0.2, variation) * scale_fade
+		var size := particle_mask_texture.get_size() * texture_scale
+		var pos := origin + Vector2.RIGHT.rotated(angle) * displacement
+		var alpha := (1.0 - progress) * (0.65 + variation * 0.35)
+		draw_texture_rect(particle_mask_texture, Rect2(pos - size * 0.5, size), false, Color(color.r, color.g, color.b, alpha))
 
 
 func _draw_spawn_warning(warning: Dictionary, offset: Vector2) -> void:
@@ -2760,6 +3141,39 @@ func _draw_item_icon(item_type: int, pos: Vector2, size: float, color: Color) ->
 			draw_circle(pos, size * 0.22, color)
 			draw_line(pos + Vector2(-size, 0.0), pos + Vector2(-size * 0.45, 0.0), color, 2.5, true)
 			draw_line(pos + Vector2(size * 0.45, 0.0), pos + Vector2(size, 0.0), color, 2.5, true)
+		ItemData.ItemType.BROAD_SPECTRUM:
+			draw_circle(pos, size * 0.72, Color(color.r, color.g, color.b, 0.28))
+			draw_arc(pos, size * 0.72, 0.0, TAU, 24, color, 3.0, true)
+			draw_circle(pos, size * 0.25, color)
+		ItemData.ItemType.CONCENTRATED_DOSE:
+			for scale in [1.0, 0.62, 0.26]:
+				draw_arc(pos, size * float(scale), 0.0, TAU, 24, color, 2.5, true)
+		ItemData.ItemType.LYSIS_CASCADE:
+			for ray in 8:
+				var direction := Vector2.RIGHT.rotated(TAU * float(ray) / 8.0)
+				draw_line(pos + direction * size * 0.35, pos + direction * size, color, 2.5, true)
+			draw_circle(pos, size * 0.25, color)
+		ItemData.ItemType.OSMOTIC_ROUNDS:
+			draw_circle(pos + Vector2(size * 0.35, 0.0), size * 0.36, color)
+			for trail in 3:
+				var y := (float(trail) - 1.0) * size * 0.38
+				draw_line(pos + Vector2(-size, y), pos + Vector2(-size * 0.15, y), color, 2.5, true)
+		ItemData.ItemType.SPLIT_SHOCK:
+			for arm in 3:
+				var direction := Vector2.RIGHT.rotated(TAU * float(arm) / 3.0 - PI * 0.5)
+				draw_line(pos, pos + direction * size, color, 3.0, true)
+				draw_circle(pos + direction * size, 3.0, color)
+			draw_circle(pos, size * 0.22, color)
+		ItemData.ItemType.FEVER_RESPONSE:
+			var pulse := PackedVector2Array([pos + Vector2(-size, 0.0), pos + Vector2(-size * 0.45, 0.0), pos + Vector2(-size * 0.2, -size * 0.7), pos + Vector2(size * 0.15, size * 0.72), pos + Vector2(size * 0.42, 0.0), pos + Vector2(size, 0.0)])
+			draw_polyline(pulse, color, 3.5, true)
+		ItemData.ItemType.REPULSOR_DOSE:
+			draw_line(pos + Vector2(-size, 0.0), pos + Vector2(size * 0.65, 0.0), color, 3.5, true)
+			draw_colored_polygon(PackedVector2Array([pos + Vector2(size, 0.0), pos + Vector2(size * 0.42, -size * 0.45), pos + Vector2(size * 0.42, size * 0.45)]), color)
+		ItemData.ItemType.DELAYED_RELEASE:
+			draw_arc(pos, size * 0.82, -PI * 0.2, TAU - PI * 0.2, 26, color, 2.5, true)
+			draw_line(pos, pos + Vector2(0.0, -size * 0.52), color, 3.0, true)
+			draw_line(pos, pos + Vector2(size * 0.42, 0.0), color, 3.0, true)
 
 
 func _draw_boon_choice(choice: Dictionary, offset: Vector2) -> void:
@@ -2821,6 +3235,48 @@ func _draw_goo_patch(patch: Dictionary, offset: Vector2) -> void:
 	draw_arc(pos, radius, 0.0, TAU, 30, Color(LIME_DARK.r, LIME_DARK.g, LIME_DARK.b, 0.52 * alpha), 2.0, true)
 
 
+func _boid_trail_wobble(fragment: Dictionary, point_index: int, progress: float) -> float:
+	if bool(saved.get("reduced_motion", false)):
+		return 0.0
+	var envelope := sin(clampf(progress, 0.0, 1.0) * PI)
+	return sin(run_time * BOID_TRAIL_PHASE_SPEED + float(fragment.get("trail_seed", 0.0)) + float(point_index) * 1.7) * BOID_TRAIL_WOBBLE * envelope
+
+
+func _boid_trail_visual_point(index: int, fragment: Dictionary, point_index: int) -> Vector2:
+	var count := int(fragment.get("trail_count", 0))
+	if point_index >= count:
+		return Vector2(fragment.pos)
+	var point := _boid_trail_point(index, fragment, point_index)
+	var previous := _boid_trail_point(index, fragment, maxi(0, point_index - 1))
+	var following := Vector2(fragment.pos) if point_index + 1 >= count else _boid_trail_point(index, fragment, point_index + 1)
+	var tangent := following - previous
+	if tangent.length_squared() <= 0.0001:
+		tangent = Vector2(fragment.vel)
+	var normal := Vector2(-tangent.y, tangent.x).normalized()
+	var progress := float(point_index + 1) / float(maxi(count, 1))
+	return point + normal * _boid_trail_wobble(fragment, point_index, progress)
+
+
+func _draw_boid_trail(index: int, fragment: Dictionary, offset: Vector2) -> void:
+	var count := int(fragment.get("trail_count", 0))
+	for point_index in count:
+		var progress := float(point_index + 1) / float(maxi(count, 1))
+		var texture_scale := lerpf(0.01, 0.05, progress)
+		var size := particle_mask_texture.get_size() * texture_scale
+		var pos := _boid_trail_visual_point(index, fragment, point_index) + offset
+		var alpha := lerpf(0.08, 0.58, progress)
+		draw_texture_rect(particle_mask_texture, Rect2(pos - size * 0.5, size), false, Color(BOID_EXPLOSION_COLOR.r, BOID_EXPLOSION_COLOR.g, BOID_EXPLOSION_COLOR.b, alpha))
+
+
+func _draw_boid(fragment: Dictionary, offset: Vector2) -> void:
+	var pos := Vector2(fragment.pos) + offset
+	for layer in boid_visual_textures.size():
+		var texture := boid_visual_textures[layer]
+		var layer_scale := BOID_ASSET_SCALE * _boid_idle_layer_scale(fragment, layer)
+		var size := texture.get_size() * layer_scale
+		draw_texture_rect(texture, Rect2(pos - size * 0.5, size), false)
+
+
 func _draw_boss_ring_attack(germ: Dictionary, offset: Vector2) -> void:
 	var attack_phase := int(germ.dash_phase)
 	if attack_phase != BossDashPhase.RING_WARNING and attack_phase != BossDashPhase.RING_ACTIVE:
@@ -2876,10 +3332,15 @@ func _draw_germ(g: Dictionary, offset: Vector2, actor_scale: float = 1.0) -> voi
 		var volley_motion := 0.0 if bool(saved.get("reduced_motion", false)) else 0.5 + 0.5 * sin(float(g.volley_timer) * 20.0)
 		for ring in 3:
 			draw_arc(pos, radius + 15.0 + float(ring) * 13.0, 0.0, TAU, 64, Color(BOSS_2_CORE.r, BOSS_2_CORE.g, BOSS_2_CORE.b, 0.5 + volley_motion * 0.3 - float(ring) * 0.1), 3.0, true)
-		for shot in GameMath.BOSS_VOLLEY_COUNT:
-			var volley_angle := float(g.volley_rotation) + TAU * float(shot) / float(GameMath.BOSS_VOLLEY_COUNT)
-			var volley_direction := Vector2.RIGHT.rotated(volley_angle)
-			draw_line(pos + volley_direction * (radius + 8.0), pos + volley_direction * (radius + 42.0), LIME, 3.0, true)
+		var shot_count := GameMath.PEWPOID_VOLLEY_COUNT if is_boss_2 else GameMath.BOSS_VOLLEY_COUNT
+		for shot in shot_count:
+			var volley_direction := Vector2.RIGHT.rotated(float(g.volley_rotation) + TAU * float(shot) / float(shot_count))
+			var tell_start := pos + volley_direction * (radius + 8.0)
+			if is_boss_2:
+				var emitter_offset := _pewpoid_emitter_offset(shot, _germ_visual_rotation(g), radius)
+				volley_direction = emitter_offset.normalized()
+				tell_start = pos + emitter_offset
+			draw_line(tell_start, tell_start + volley_direction * 34.0, LIME, 3.0, true)
 	_draw_germ_asset_body(g, pos, tier, radius, offset)
 	if float(g.get("freeze_left", 0.0)) > 0.0:
 		draw_circle(pos, radius * 0.88, Color(CYAN.r, CYAN.g, CYAN.b, 0.08))
@@ -2906,12 +3367,13 @@ func _draw_germ_asset_body(germ: Dictionary, pos: Vector2, tier: int, radius: fl
 	if tier < 0 or tier >= germ_visual_textures.size():
 		return
 	var tier_layers: Array = germ_visual_textures[tier]
-	if tier_layers.size() != germ_layer_sources.size():
+	var tier_masks: Array = germ_flash_masks[tier]
+	if tier_layers.size() != 4 or tier_masks.size() != tier_layers.size():
 		return
 	var camera_transform := Transform2D(0.0, Vector2.ONE * _dialogue_camera_zoom(), 0.0, _dialogue_camera_origin(offset))
-	var germ_transform := Transform2D(float(germ.phase) * 0.1, Vector2.ONE, 0.0, pos)
+	var germ_transform := Transform2D(_germ_visual_rotation(germ), Vector2.ONE, 0.0, pos)
 	draw_set_transform_matrix(camera_transform * germ_transform)
-	var base_scale := radius / GERM_ASSET_RADIUS
+	var base_scale := radius / _germ_asset_radius(tier)
 	var flash_amount := _germ_hit_flash_amount(germ)
 	for layer in tier_layers.size():
 		var texture: Texture2D = tier_layers[layer]
@@ -2920,7 +3382,7 @@ func _draw_germ_asset_body(germ: Dictionary, pos: Vector2, tier: int, radius: fl
 		var rect := Rect2(-layer_size * 0.5, layer_size)
 		draw_texture_rect(texture, rect, false)
 		if flash_amount > 0.0:
-			draw_texture_rect(germ_flash_masks[layer], rect, false, Color(BOSS_2_CORE.r, BOSS_2_CORE.g, BOSS_2_CORE.b, flash_amount))
+			draw_texture_rect(tier_masks[layer], rect, false, Color(BOSS_2_CORE.r, BOSS_2_CORE.g, BOSS_2_CORE.b, flash_amount))
 	draw_set_transform_matrix(camera_transform)
 
 

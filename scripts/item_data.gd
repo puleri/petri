@@ -14,6 +14,14 @@ enum ItemType {
 	ANTIBODY_SHELL,
 	CATALYTIC_CLEANUP,
 	SEEKING_ENZYME,
+	BROAD_SPECTRUM,
+	CONCENTRATED_DOSE,
+	LYSIS_CASCADE,
+	OSMOTIC_ROUNDS,
+	SPLIT_SHOCK,
+	FEVER_RESPONSE,
+	REPULSOR_DOSE,
+	DELAYED_RELEASE,
 }
 
 const MAX_LEVEL := 3
@@ -35,6 +43,14 @@ static func display_name(item_type: int) -> String:
 		ItemType.ANTIBODY_SHELL: return "ANTIBODY SHELL"
 		ItemType.CATALYTIC_CLEANUP: return "CATALYTIC CLEANUP"
 		ItemType.SEEKING_ENZYME: return "SEEKING ENZYME"
+		ItemType.BROAD_SPECTRUM: return "BROAD SPECTRUM"
+		ItemType.CONCENTRATED_DOSE: return "CONCENTRATED DOSE"
+		ItemType.LYSIS_CASCADE: return "LYSIS CASCADE"
+		ItemType.OSMOTIC_ROUNDS: return "OSMOTIC ROUNDS"
+		ItemType.SPLIT_SHOCK: return "SPLIT SHOCK"
+		ItemType.FEVER_RESPONSE: return "FEVER RESPONSE"
+		ItemType.REPULSOR_DOSE: return "REPULSOR DOSE"
+		ItemType.DELAYED_RELEASE: return "DELAYED RELEASE"
 	return "ITEM"
 
 
@@ -52,6 +68,14 @@ static func color(item_type: int) -> Color:
 		ItemType.ANTIBODY_SHELL: return Color("#E0A52B")
 		ItemType.CATALYTIC_CLEANUP: return Color("#B35C9B")
 		ItemType.SEEKING_ENZYME: return Color("#2E9CCA")
+		ItemType.BROAD_SPECTRUM: return Color("#F08A5D")
+		ItemType.CONCENTRATED_DOSE: return Color("#6C5CE7")
+		ItemType.LYSIS_CASCADE: return Color("#D45087")
+		ItemType.OSMOTIC_ROUNDS: return Color("#3A86FF")
+		ItemType.SPLIT_SHOCK: return Color("#70D6FF")
+		ItemType.FEVER_RESPONSE: return Color("#FF595E")
+		ItemType.REPULSOR_DOSE: return Color("#8AC926")
+		ItemType.DELAYED_RELEASE: return Color("#FFCA3A")
 	return Color.WHITE
 
 
@@ -204,3 +228,85 @@ static func seeking_turn_speed(level: int) -> float:
 		3: return 3.0
 		4: return 5.0
 	return 0.0
+
+
+static func projectile_radius(level: int) -> float:
+	match clampi(level, 0, OVERCHARGE_LEVEL):
+		1: return 7.0
+		2: return 9.0
+		3: return 11.0
+		4: return 14.0
+	return 5.0
+
+
+static func concentrated_hit_interval(level: int) -> int:
+	match clampi(level, 0, OVERCHARGE_LEVEL):
+		1: return 5
+		2: return 4
+		3: return 3
+		4: return 2
+	return 0
+
+
+static func lysis_radius(level: int) -> float:
+	match clampi(level, 0, OVERCHARGE_LEVEL):
+		1: return 40.0
+		2: return 55.0
+		3: return 70.0
+		4: return 95.0
+	return 0.0
+
+
+static func lysis_damage(level: int) -> int:
+	return 2 if level >= OVERCHARGE_LEVEL else (1 if level > 0 else 0)
+
+
+static func osmotic_age_threshold(level: int) -> float:
+	match clampi(level, 0, OVERCHARGE_LEVEL):
+		1: return 0.55
+		2: return 0.45
+		3: return 0.35
+		4: return 0.2
+	return INF
+
+
+static func osmotic_bonus(level: int, projectile_age: float) -> int:
+	if level <= 0 or projectile_age < osmotic_age_threshold(level):
+		return 0
+	return 2 if level >= OVERCHARGE_LEVEL else 1
+
+
+static func split_freeze_duration(level: int) -> float:
+	match clampi(level, 0, OVERCHARGE_LEVEL):
+		1: return 0.35
+		2: return 0.6
+		3: return 0.85
+		4: return 1.2
+	return 0.0
+
+
+static func fever_radius(level: int) -> float:
+	match clampi(level, 0, OVERCHARGE_LEVEL):
+		1: return 140.0
+		2: return 190.0
+		3: return 240.0
+		4: return INF
+	return 0.0
+
+
+static func repulsor_distance(level: int) -> float:
+	match clampi(level, 0, OVERCHARGE_LEVEL):
+		1: return 18.0
+		2: return 30.0
+		3: return 42.0
+		4: return 60.0
+	return 0.0
+
+
+static func delayed_release_interval(level: int) -> int:
+	match clampi(level, 0, OVERCHARGE_LEVEL):
+		1: return 6
+		2: return 4
+		3: return 3
+		4: return 2
+	return 0

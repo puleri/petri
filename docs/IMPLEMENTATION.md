@@ -12,7 +12,11 @@ Target compositions are 1280×720, 1920×1080, and 2560×1080.
 
 ## Germ visuals
 
-Active germs are drawn from the four concentric `Meeboid-4.png` through `Meeboid-1.png` layers; `Meeboid.png` remains a composite preview. Startup builds seven hue-shifted, mipmapped texture sets while preserving the original alpha and relative shading: cyan for large/small, lavender for medium, orange for the elite, dark purple for the first boss, deeper purple for the second boss, and midnight purple for the third boss. The 238-pixel outer layer scales to each existing gameplay radius, so collision geometry and tier statistics remain unchanged. Elite and boss identity rings, health arcs, dash tells, volley warnings, and the contracting-ring tell render around the illustrated body.
+Regular germs, the elite, and bosses one and three are drawn from the four concentric `Meeboid-4.png` through `Meeboid-1.png` layers; `Meeboid.png` remains a composite preview. Startup builds six hue-shifted, mipmapped Meeboid texture sets while preserving the original alpha and relative shading: cyan for large/small, lavender for medium, orange for the elite, dark purple for the first boss, and midnight purple for the third boss. Their 238-pixel outer layer scales to each existing gameplay radius, so collision geometry and tier statistics remain unchanged.
+
+Boss two instead uses the four original-color `Pewpoid-1.png` through `Pewpoid-4.png` layers and its own cached flash masks. The authored body renders at the existing 100-pixel collision radius and rotates at 0.5 radians per second. The six warning rays and Boid spawn positions use the exact authored Pewpoid emitter offsets, rotated and scaled with the body. Boss two's six Boids use the shared 80-entry debris pool, a 0.25 visual scale, a 27.5-pixel collision radius, no spin, and the supplied staggered one-second layer pulse. Elite and boss identity rings, health arcs, dash tells, volley warnings, and the contracting-ring tell continue to render around the illustrated bodies.
+
+Every debris slot owns six fixed trail samples, for 480 `Vector2` entries total. Active Boids add a sample after each seven pixels of travel and draw tapered copies of `ParticleMask-Soft.png` behind the body. Destroying or consuming a Boid requests a four-particle, 0.4-second lavender explosion from the existing 24-entry effect pool; a full pool drops the visual without changing gameplay. Reduced Motion removes the Boid layer pulse, trail warble, and explosion displacement while preserving movement, trails, collision, and all attack timing. The Pewpoid, Boid, trail, and explosion scenes remain editor previews only and are never instantiated by gameplay.
 
 The custom canvas renderer uses a fixed painter's order instead of allocating separate z-indexed sprite nodes. Hostiles render from largest to smallest—third boss, second boss, first boss, elite, large, medium, small, then debris—so the smallest threats remain visible when bodies overlap. Pellets and the player continue to render above the hostile stack.
 
@@ -41,11 +45,12 @@ The player body uses the soft-edged `P1.png` arrow. Its upward-facing source art
 - Boss dash: 2.5 s initial delay, 0.9 s direction-lock tell, 0.6 s at 420 px/s, 3 s cooldown
 - Boss reward: reset all item state, refill health to the current maximum, grant 2-damage player pellets for the remainder of the run, then enter boon selection
 - Second boss threshold: 100,000 points, using the same clear-dish entry gate and reserved boss slot
-- Second boss: radius 100, 600 HP, speed 36–48, 10,000 base score, no split or death debris
-- Second-boss volley: first available after 4.5 s of chase time; 0.9 s tell; ten debris at 220 px/s, 6 s lifetime, and one bounce; 6 s cooldown
+- Second boss: radius 100, 600 HP, speed 36–48, 10,000 base score, no split or death debris; renders as the original mint/cyan Pewpoid
+- Second-boss volley: first available after 4.5 s of chase time; 0.9 s tell; six Boids at 220 px/s, 6 s lifetime, and one bounce; 6 s cooldown
 - Second boss reward: clear volley debris, reset all item state, refill health to the current maximum, retain 2-damage pellets, increase the player fire rate from 6 to 9 volleys/s, then enter boon selection
 - Third boss threshold: 150,000 points, using the same clear-dish entry gate and shared reserved boss slot
 - Third boss: radius 120, 2,200 HP, speed 38–48, 25,000 base score, no split or death debris; retains the existing dash and radial volley
+- Third-boss volley: ten ordinary debris with the same 0.9 s tell, 220 px/s speed, 6 s lifetime, one bounce, and 6 s cooldown
 - Contracting ring: first available after 7 s of chase time; 1.1 s stationary warning with a locked 60-degree safe wedge; an 18-pixel ring contracts from membrane to center over 1.4 s and repeats after 7 s of chase time
 - Third boss reward: clear volley/ring state, reset all item state, retain the 2-damage/9-volley weapon, add one run-only maximum health, refill health, then enter boon selection
 
@@ -84,7 +89,8 @@ The top-center segmented health bar supports three through six health. The lower
 - Antibody shell: 32/24/16/8 s recharge; blocks germ and debris contact but not membrane impacts
 - Catalytic cleanup: shot debris deals 1 damage at radii 45/60/75; overcharge deals 2 damage at radius 95
 - Seeking enzyme: acquisition radii 170/240/320/500; turn speeds 1.2/2/3/5 rad/s
-- Fixed pools: 37 germs (35 regular, one elite, one shared milestone-boss slot), 80 debris, 240 projectiles, 3 turrets, 48 mines, 24 effect flashes, 4 pickup/aura slots, 3 boon choices, and 64 goo patches
+- Boids: radius 27.5 versus the ordinary debris defaults of 8 for contact and 10 at the membrane. Player attacks and abilities destroy them for the normal 10 debris points and Catalytic Cleanup interactions. Player contact always consumes them but protection prevents damage; timeout, final membrane impact, contact, boss cleanup, and run reset grant no score.
+- Fixed pools: 37 germs (35 regular, one elite, one shared milestone-boss slot), 80 debris, 480 Boid-trail points, 240 projectiles, 3 turrets, 48 mines, 24 shared ring/explosion effects, 4 pickup/aura slots, 3 boon choices, and 64 goo patches
 
 ## Figma handoff
 

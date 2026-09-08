@@ -1,6 +1,6 @@
-[gd_resource type="Resource" script_class="GermData" load_steps=2 format=3]
+[gd_resource type="Resource" script_class="GermData" format=3 uid="uid://c0ysar84psf2d"]
 
-[ext_resource type="Script" path="res://scripts/germ_data.gd" id="1"]
+[ext_resource type="Script" uid="uid://dpvbqltongenp" path="res://scripts/germ_data.gd" id="1"]
 
 [resource]
 script = ExtResource("1")
@@ -11,5 +11,4 @@ speed_min = 52.8
 speed_max = 78.4
 score = 50
 child_tier = 2
-child_count = 2
 fragment_count = 2
